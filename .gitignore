@@ -1,0 +1,10 @@
+nway-system-service/nway-system-authz-sdk/target/
+nway-system-service/nway-system-message-api/target/
+nway-system-service/nway-system-server/data/
+nway-system-web/auto-imports.d.ts
+nway-system-web/components.d.ts
+nway-system-web/package-lock.json
+nway-system-web/node_modules/.package-lock.json
+nway-system-web/node_modules/
+nway-system-service/nway-system-server/target/
+.idea/

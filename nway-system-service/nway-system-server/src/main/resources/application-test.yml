@@ -1,0 +1,19 @@
+server:
+  port: 9081 #端口
+
+spring:
+  datasource:
+    druid:
+      url: jdbc:mariadb://180.184.30.223:3306/nway_system?useSSL=true&serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&allowPublicKeyRetrieval=true
+      username: nway
+      password: Nway123
+      initialSize: 5
+      maxActive: 30
+      minIdle: 5
+      maxWait: 3000
+      validationQuery: select 1
+      testWhileIdle: true
+      logAbandoned: true
+  data:
+    redis:
+      host: 180.184.30.223

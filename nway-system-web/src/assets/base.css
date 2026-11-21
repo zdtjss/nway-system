@@ -1,0 +1,98 @@
+body {
+    font-family: 微软雅黑, Microsoft YaHei, Helvetica Neue, Helvetica, PingFang SC, Hiragino Sans GB, Arial, sans-serif
+}
+
+.icon8 {
+    width: 8px;
+    height: 8px;
+    display: inline-block;
+    background-size: cover;
+}
+
+.icon16 {
+    width: 16px;
+    height: 16px;
+    display: inline-block;
+    background-size: cover;
+}
+
+.icon18 {
+    width: 18px;
+    height: 18px;
+    display: inline-block;
+    background-size: cover;
+}
+
+.icon32 {
+    width: 32px !important;
+    height: 32px !important;
+    display: inline-block;
+    background-size: cover;
+}
+
+.login_bg {
+    height: calc(100vh);
+    background-size: cover;
+    background-image: url("@/assets/icon/login_bg.webp");
+}
+
+.icon_home {
+    background-image: url("@/assets/icon/主页.svg");
+}
+
+.icon_back {
+    background-image: url("@/assets/icon/返回.svg");
+}
+
+.icon_more {
+    background-image: url("@/assets/icon/更多.svg");
+}
+
+.icon_menu {
+    background-image: url("@/assets/icon/菜单.svg");
+}
+
+.icon_menu_sys {
+    background-image: url("@/assets/icon/系统菜单.svg");
+}
+
+.icon_search {
+    background-image: url("@/assets/icon/搜索.svg");
+}
+
+.icon_close {
+    background-image: url("@/assets/icon/关闭.svg");
+}
+
+.icon_module {
+    background-image: url("@/assets/icon/模块.svg");
+}
+
+.icon_dir {
+    background-image: url("@/assets/icon/目录.svg");
+}
+
+.icon_page {
+    background-image: url("@/assets/icon/页面.svg");
+}
+
+.icon_tag {
+    background-image: url("@/assets/icon/页签.svg");
+}
+
+.icon_user {
+    background-image: url("@/assets/icon/用户.svg");
+}
+
+.icon_pwd {
+    background-image: url("@/assets/icon/密码.svg");
+}
+
+.avatar {
+    border-radius: 18px;
+    width: 36px;
+    height: 36px;
+    display: inline-block;
+    background-size: 36px;
+    background-image: url("@/assets/icon/avatar.png");
+}

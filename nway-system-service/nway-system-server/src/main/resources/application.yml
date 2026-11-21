@@ -1,0 +1,149 @@
+server:
+  port: 8081 #端口
+  shutdown: "graceful"
+  servlet:
+    context-path: /nway-system
+spring:
+  application:
+    name: nway-system
+  profiles:
+    active: local
+  lifecycle:
+    timeout-per-shutdown-phase: 60s
+  servlet:
+    multipart:
+      # 文件中心上限：与 nway.file.max-size 保持一致（业务侧不得大于此值）
+      max-file-size: ${FILE_MAX_SIZE:200MB}
+      max-request-size: ${FILE_MAX_REQUEST_SIZE:220MB}
+  mail:
+    host: ${MAIL_HOST:}
+    port: ${MAIL_PORT:465}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          ssl:
+            enable: true
+          auth: true
+
+url:
+  anonymous:
+    - '/login'
+    - '/login/getLoginUser'
+    - '/login/refresh'
+    # 登录前密码已过期：凭旧密码自助改密
+    - '/login/external/changePassword'
+    # 浏览器直链（<img>/<video>）无法携带 Authorization Header，凭短时票据访问
+    - '/file/ticketDownload'
+
+nway:
+  jwt:
+    secret: ${JWT_SECRET:nway-system-jwt-secret-key-2026-please-change-in-production}
+    open-secret: ${JWT_OPEN_SECRET:}  # 开放平台独立密钥，为空时降级使用 secret（非开发/测试环境禁止为空）
+    # 会话时长（可用环境变量调整）：有效期决定空闲多久需重新登录，有效期 × (最大续期次数 + 1) ≈ 会话总时长上限
+    expire-millis: ${JWT_EXPIRE_MILLIS:86400000}  # Token 有效期，默认 24 小时
+    refresh-threshold-millis: ${JWT_REFRESH_THRESHOLD_MILLIS:300000}  # 续期阈值，剩余不足 5 分钟可续期
+    max-refresh-count: ${JWT_MAX_REFRESH_COUNT:30}  # 单 Token 最大续期次数（24h × 30 ≈ 30 天会话上限）
+  # 外部身份认证（账号密码身份源，登录页无感知）：默认关闭
+  # 开启后 loginType=password 统一由外部系统校验，本地无账号时按配置补建影子账号并签发平台 JWT
+  login:
+    external:
+      enabled: ${EXTERNAL_AUTH_ENABLED:true}
+      # 外部认证服务地址（含 context-path）
+      base-url: ${EXTERNAL_AUTH_BASE_URL:http://localhost:8085/eccp-portal2}
+      login-path: ${EXTERNAL_AUTH_LOGIN_PATH:/portal/user/login}
+      change-password-path: ${EXTERNAL_AUTH_CHANGE_PASSWORD_PATH:/portal/user/nwayChangePassword}
+      # 内部调用凭据（请求头 X-Nway-Token），与外部系统配置的同一密钥一致
+      token: ${EXTERNAL_AUTH_TOKEN:X-Nway-Token}
+      # 外部用户落地到 nway 时的归属租户
+      tenant-code: ${EXTERNAL_AUTH_TENANT_CODE:OA}
+      # 外部认证通过但本地无账号时自动补建影子账号
+      auto-provision: ${EXTERNAL_AUTH_AUTO_PROVISION:true}
+      # 外部认证判定账号不存在时回退平台本地密码认证（保留平台管理员登录入口）
+      local-fallback: ${EXTERNAL_AUTH_LOCAL_FALLBACK:true}
+      connect-timeout-millis: ${EXTERNAL_AUTH_CONNECT_TIMEOUT:1000}
+      read-timeout-millis: ${EXTERNAL_AUTH_READ_TIMEOUT:3000}
+  security:
+    # 可信反向代理地址（精确 IP / CIDR / 前缀通配，逗号分隔）。
+    # 仅当请求直连方命中该列表时才采信 X-Forwarded-For、X-Real-IP；为空时使用内置默认值（回环 + 私有网段）
+    trusted-proxies: ${TRUSTED_PROXIES:}
+  async:
+    # 消息发送异步任务并发上限（背压）：超出后立即拒绝，避免堆积耗尽数据库连接池
+    message-max-concurrent: ${MESSAGE_MAX_CONCURRENT:200}
+  tenant:
+    quota:
+      # 单租户内部接口 QPS 上限（进程内计数，≤0 表示不限制）；多实例部署时集群总配额≈实例数×该值
+      internal-qps: ${TENANT_INTERNAL_QPS:1000}
+  audit:
+    exclude-paths:
+      - /message/polling
+      - /login/refresh
+      - /open/token
+  open:
+    # 开放平台配置（配置了 open-secret 时使用独立密钥签名，否则降级使用 jwt.secret）
+  internal:
+    service:
+      # 平台内部服务接口（/internal/**）令牌密钥；为空时内部接口一律拒绝（fail-closed）
+      secret: ${SYSTEM_INTERNAL_SERVICE_SECRET:}
+      allowed-issuers: ${SYSTEM_INTERNAL_SERVICE_ISSUERS:workflow}
+      audience: ${SYSTEM_INTERNAL_SERVICE_AUDIENCE:nway-system}
+      required-scope: "${SYSTEM_INTERNAL_SERVICE_SCOPE:msg:send}"
+  file:
+    # 新上传使用的存储引擎：local / s3（读操作按 sys_file.storage_type 路由）
+    storage-type: ${FILE_STORAGE_TYPE:local}
+    # 业务校验上限，必须不大于 multipart 上限
+    max-size: ${FILE_MAX_BYTES:209715200}
+    allowed-extensions: >-
+      jpg,jpeg,png,gif,webp,bmp,
+      mp4,webm,ogg,
+      pdf,doc,docx,xls,xlsx,ppt,pptx,txt,csv,zip,rar,7z
+    ticket-ttl-seconds: ${FILE_TICKET_TTL:600}
+    # 外部系统跨域直连时配置来源白名单（逗号分隔，支持通配）；留空表示不开放跨域
+    cors-allowed-origins: ${FILE_CORS_ORIGINS:}
+    local:
+      # 必须在 Web 静态目录之外，且多实例部署时挂共享持久卷
+      root: ${FILE_STORAGE_ROOT:./data/files}
+    s3:
+      enabled: false
+      endpoint: ${FILE_S3_ENDPOINT:}
+      bucket: ${FILE_S3_BUCKET:}
+      access-key: ${FILE_S3_ACCESS_KEY:}
+      secret-key: ${FILE_S3_SECRET_KEY:}
+  ai:
+    # 模型 API Key 的 AES-GCM 主密钥（生产必须显式配置，长度任意，内部 SHA-256 派生）
+    crypto-key: ${AI_CRYPTO_KEY:}
+    # HarnessAgent 工作目录（多实例部署时挂共享卷或使用独立目录）
+    workspace: ${AI_WORKSPACE:./data/ai-workspace}
+    # AgentScope 会话状态在 Redis 中的键前缀
+    redis-key-prefix: ${AI_REDIS_KEY_PREFIX:nway:ai:}
+    # 接口检索：规则召回置信度不足时，用大模型在已授权接口目录中做语义路由
+    search:
+      llm-routing-enabled: ${AI_SEARCH_LLM_ROUTING_ENABLED:true}
+      # 语义路由超时；超时或失败自动回退规则检索结果
+      llm-routing-timeout-ms: ${AI_SEARCH_LLM_ROUTING_TIMEOUT_MS:3000}
+      # 语义路由专用模型（按模型配置名称或 modelName 匹配）；为空时使用默认模型
+      routing-model: ${AI_SEARCH_ROUTING_MODEL:}
+    tools:
+      # 可选工具：按关键词查询字段候选值（接口字段配置 optionSource 时使用）
+      lookup-options-enabled: ${AI_LOOKUP_OPTIONS_ENABLED:false}
+      # 可选工具：按 fileId 按需解析并读取对话附件文本（关闭后对话无法读取文件内容）
+      read-file-enabled: ${AI_READ_FILE_ENABLED:true}
+  message:
+    mail:
+      from: ${MAIL_FROM:}
+    wxwork:
+      corpid: ${WXWORK_CORPID:}
+      corpsecret: ${WXWORK_CORPSECRET:}
+      agentid: ${WXWORK_AGENTID:0}
+
+# Actuator 健康检查与监控端点
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+      show-components: always

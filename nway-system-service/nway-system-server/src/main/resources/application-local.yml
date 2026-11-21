@@ -1,0 +1,35 @@
+server:
+  port: 9081 #端口
+
+spring:
+  datasource:
+    druid:
+      url: jdbc:mariadb://192.168.56.105:3306/nway_system?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true
+      username: nway_system
+      password: Nway123
+      initialSize: 5
+      maxActive: 50
+      minIdle: 5
+      maxWait: 3000
+      validationQuery: select 1
+      testWhileIdle: true
+      logAbandoned: true
+  data:
+    redis:
+      host: 192.168.56.105
+
+nway:
+  internal:
+    service:
+      # 本地联调：与 workflow-engine application-local.yml 的
+      # workflow.integration.nway-system.service-secret 保持一致
+      secret: ${SYSTEM_INTERNAL_SERVICE_SECRET:nway-workflow-internal-service-secret-2026-please-change-in-production}
+  ai:
+    # 会话消息正文（AgentScope 运行时 journal）存放在该目录下。
+    # 本地后端可能从 service 根目录或 nway-system-server 目录启动，必须固定为绝对路径，
+    # 否则换个启动目录就会读不到历史会话的消息。
+    workspace: ${AI_WORKSPACE:${user.home}/.nway/ai-workspace}
+    tools:
+      # 本地联调启用两个可选工具
+      lookup-options-enabled: ${AI_LOOKUP_OPTIONS_ENABLED:true}
+      read-file-enabled: ${AI_READ_FILE_ENABLED:true}

@@ -1,0 +1,2 @@
+com.nway.system.authz.sdk.config.PermissionAutoConfiguration
+com.nway.system.authz.sdk.config.AuthzAutoConfiguration

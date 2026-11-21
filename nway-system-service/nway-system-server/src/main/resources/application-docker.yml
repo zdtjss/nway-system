@@ -1,0 +1,19 @@
+# Docker 部署专用配置（通过 SPRING_PROFILES_ACTIVE=docker 激活）
+# 数据源与 Redis 连接信息均通过环境变量注入，便于容器化编排
+spring:
+  datasource:
+    druid:
+      url: ${SPRING_DATASOURCE_URL:jdbc:mariadb://mariadb:3306/nway_system?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true}
+      username: ${SPRING_DATASOURCE_USERNAME:nway_system}
+      password: ${SPRING_DATASOURCE_PASSWORD:Nway123}
+      initialSize: 5
+      maxActive: ${DB_MAX_ACTIVE:50}
+      minIdle: 5
+      maxWait: 3000
+      validationQuery: select 1
+      testWhileIdle: true
+      logAbandoned: true
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:redis}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
