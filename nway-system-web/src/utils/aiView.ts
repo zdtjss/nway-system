@@ -137,6 +137,8 @@ interface OutputFieldMeta {
 interface InterfaceMeta {
   name: string
   fields: Map<string, FieldMeta>
+  /** 接口入参定义原文，确认弹窗在事件缺少 inputSchema 时兜底 */
+  schema?: any[]
   outputs?: OutputFieldMeta[]
 }
 
@@ -170,8 +172,24 @@ export function rememberInterfaceFields(interfaceCode?: string, name?: string, i
   interfaceMeta.set(interfaceCode, {
     name: existed?.name || name || interfaceCode,
     fields,
+    schema: Array.isArray(inputSchema) ? inputSchema : existed?.schema,
     outputs: existed?.outputs
   })
+}
+
+/** 已缓存接口的展示名：确认弹窗在事件缺少 interfaceName 时兜底。 */
+export function rememberedInterfaceName(interfaceCode?: string): string | undefined {
+  if (!interfaceCode) return undefined
+  return interfaceMeta.get(interfaceCode)?.name || undefined
+}
+
+/**
+ * 已缓存接口的入参定义：确认弹窗在事件缺少 inputSchema 时兜底，
+ * 保证表单仍能按接口字段展示，而不是退化成一段原始 JSON。
+ */
+export function rememberedInterfaceFields(interfaceCode?: string) {
+  const schema = interfaceCode ? interfaceMeta.get(interfaceCode)?.schema : undefined
+  return Array.isArray(schema) ? schema : []
 }
 
 /** get_interface_config 的结果：缓存接口名、字段定义与出参结构，供调用结果渲染使用。 */
@@ -184,11 +202,13 @@ export function rememberInterfaceConfig(raw?: string | null) {
       const code = typeof item?.interfaceCode === 'string' ? item.interfaceCode : ''
       if (!code) return
       // 先以 inputSchema 为默认字段定义，再用 outputSchema 覆盖更贴近返回数据的文案
-      const fields = inputFieldMeta(item.inputSchema)
+      const inputs = inputFieldMeta(item.inputSchema)
+      const fields = new Map(inputs)
       outputFieldMeta(item.outputSchema).forEach((value, key) => fields.set(key, value))
       interfaceMeta.set(code, {
         name: typeof item.name === 'string' && item.name ? item.name : code,
         fields,
+        schema: Array.isArray(item.inputSchema) ? item.inputSchema : undefined,
         outputs: outputFieldTree(item.outputSchema)
       })
     })

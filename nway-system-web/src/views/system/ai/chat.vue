@@ -70,7 +70,12 @@
               </div>
 
               <div v-for="tool in msg.tools" :key="tool.id" class="tool-card" :class="tool.status">
-                <div class="tool-head">
+                <div class="tool-head" :class="{ 'is-toggle': hasToolBody(tool) }"
+                     @click="hasToolBody(tool) && toggleTool(tool.id)">
+                  <el-icon v-if="hasToolBody(tool)" class="tool-arrow"
+                           :class="{ open: !toolCollapsed.has(tool.id) }">
+                    <ArrowRight />
+                  </el-icon>
                   <span class="tool-dot" :class="tool.status"></span>
                   <span class="tool-name">{{ toolLabel(tool.name) }}</span>
                   <span v-if="tool.view?.interfaceName" class="tool-target">{{ tool.view.interfaceName }}</span>
@@ -78,15 +83,17 @@
                   <span v-if="tool.view?.latency" class="tool-latency">{{ tool.view.latency }}</span>
                 </div>
 
-                <template v-if="tool.view">
-                  <div v-if="tool.view.message" class="tool-message" :class="{ error: tool.view.success === false }">
-                    {{ tool.view.message }}
-                  </div>
-                  <AiViewBlock v-if="tool.view.success !== false" :view="tool.view" />
-                </template>
+                <div v-if="hasToolBody(tool)" v-show="!toolCollapsed.has(tool.id)" class="tool-body">
+                  <template v-if="tool.view">
+                    <div v-if="tool.view.message" class="tool-message" :class="{ error: tool.view.success === false }">
+                      {{ tool.view.message }}
+                    </div>
+                    <AiViewBlock v-if="tool.view.success !== false" :view="tool.view" />
+                  </template>
 
-                <pre v-else-if="tool.result" class="tool-result"
-                     @scroll="trackFollowScroll">{{ toolResultText(tool.result) }}</pre>
+                  <pre v-else-if="tool.result" class="tool-result"
+                       @scroll="trackFollowScroll">{{ toolResultText(tool.result) }}</pre>
+                </div>
               </div>
 
               <template v-for="(segment, index) in msg.segments" :key="index">
@@ -281,46 +288,59 @@
     <!-- 写操作确认 -->
     <el-dialog v-model="confirmState.visible" title="确认执行" width="640px" :close-on-click-modal="false"
                class="confirm-dialog" @closed="onConfirmClosed">
-      <div class="confirm-tip">以下操作会修改业务数据，请核对参数后执行。</div>
-      <div v-for="form in confirmForms" :key="form.toolCallId" class="confirm-section">
-        <div class="confirm-title">{{ form.interfaceName || toolLabel(form.name) }}</div>
-        <el-form label-width="120px" label-position="left">
-          <el-form-item v-for="field in form.fields" :key="field.key" :label="field.label"
-                        :required="field.required">
-            <el-select v-if="isEnum(field)" v-model="form.args[field.key]" clearable style="width: 100%">
-              <el-option v-for="opt in field.options || []" :key="String(opt.value)"
-                         :label="opt.label" :value="opt.value" />
-            </el-select>
-            <el-select v-else-if="field.type === 'MULTI_ENUM'" v-model="form.args[field.key]"
-                       multiple clearable style="width: 100%">
-              <el-option v-for="opt in field.options || []" :key="String(opt.value)"
-                         :label="opt.label" :value="opt.value" />
-            </el-select>
-            <el-switch v-else-if="field.type === 'BOOLEAN'" v-model="form.args[field.key]" />
-            <el-input-number v-else-if="field.type === 'INTEGER' || field.type === 'NUMBER'"
-                             v-model="form.args[field.key]" style="width: 100%"
-                             :precision="field.type === 'INTEGER' ? 0 : 2" />
-            <el-date-picker v-else-if="field.type === 'DATE'" v-model="form.args[field.key]"
-                            type="date" value-format="YYYY-MM-DD" style="width: 100%" />
-            <el-date-picker v-else-if="field.type === 'DATETIME'" v-model="form.args[field.key]"
-                            type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width: 100%" />
-            <el-input v-else-if="field.type === 'TEXT'" v-model="form.args[field.key]"
-                      type="textarea" :rows="3" />
-            <div v-else-if="field.type === 'FILE' || field.type === 'FILE_ARRAY'" class="file-field">
-              <el-tag v-if="form.args[field.key]" type="info">{{ form.args[field.key] }}</el-tag>
-              <span class="hint">请先在对话中上传附件，由助手填入文件 ID</span>
-            </div>
-            <el-input v-else-if="field.type === 'OBJECT' || field.type === 'ARRAY'"
-                      type="textarea" :rows="3"
-                      :model-value="jsonText(form, field)"
-                      @update:model-value="(value: string) => setJsonArg(form, field, value)" />
-            <el-input v-else v-model="form.args[field.key]" />
-            <div v-if="field.description" class="field-desc">{{ field.description }}</div>
-          </el-form-item>
-        </el-form>
-        <div v-if="!form.fields.length" class="confirm-raw">
-          <div class="confirm-raw-tip">该接口未声明入参，将按以下参数原样转发：</div>
-          <pre>{{ JSON.stringify(form.args, null, 2) }}</pre>
+      <div class="confirm-body">
+        <div class="confirm-tip">以下操作会修改业务数据，请核对参数后执行。</div>
+        <div v-for="form in confirmForms" :key="form.toolCallId" class="confirm-section">
+          <div class="confirm-title">
+            <span class="confirm-name">{{ form.interfaceName || toolLabel(form.name) }}</span>
+            <span v-if="form.interfaceCode" class="confirm-code">{{ form.interfaceCode }}</span>
+            <el-tag v-if="form.riskLevel === 'HIGH_RISK'" size="small" type="danger">高风险</el-tag>
+          </div>
+          <el-form label-width="120px" label-position="left">
+            <el-form-item v-for="field in form.submittedFields" :key="field.key" :label="field.label"
+                          :required="field.required">
+              <el-select v-if="isEnum(field)" v-model="form.args[field.key]" clearable style="width: 100%">
+                <el-option v-for="opt in field.options || []" :key="String(opt.value)"
+                           :label="opt.label" :value="opt.value" />
+              </el-select>
+              <el-select v-else-if="field.type === 'MULTI_ENUM'" v-model="form.args[field.key]"
+                         multiple clearable style="width: 100%">
+                <el-option v-for="opt in field.options || []" :key="String(opt.value)"
+                           :label="opt.label" :value="opt.value" />
+              </el-select>
+              <el-switch v-else-if="field.type === 'BOOLEAN'" v-model="form.args[field.key]" />
+              <el-input-number v-else-if="field.type === 'INTEGER' || field.type === 'NUMBER'"
+                               v-model="form.args[field.key]" style="width: 100%"
+                               :precision="field.type === 'INTEGER' ? 0 : 2" />
+              <el-date-picker v-else-if="field.type === 'DATE'" v-model="form.args[field.key]"
+                              type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+              <el-date-picker v-else-if="field.type === 'DATETIME'" v-model="form.args[field.key]"
+                              type="datetime" value-format="YYYY-MM-DD HH:mm:ss" style="width: 100%" />
+              <el-input v-else-if="field.type === 'TEXT'" v-model="form.args[field.key]"
+                        type="textarea" :rows="3" />
+              <div v-else-if="field.type === 'FILE' || field.type === 'FILE_ARRAY'" class="file-field">
+                <el-tag v-if="form.args[field.key]" type="info">{{ form.args[field.key] }}</el-tag>
+                <span class="hint">请先在对话中上传附件，由助手填入文件 ID</span>
+              </div>
+              <el-input v-else-if="field.type === 'OBJECT' || field.type === 'ARRAY'"
+                        type="textarea" :rows="3"
+                        :model-value="jsonText(form, field)"
+                        @update:model-value="(value: string) => setJsonArg(form, field, value)" />
+              <el-input v-else v-model="form.args[field.key]" />
+              <div v-if="field.description" class="field-desc">{{ field.description }}</div>
+            </el-form-item>
+          </el-form>
+          <div v-if="!form.fields.length" class="confirm-raw">
+            <div class="confirm-raw-tip">该接口未声明入参，将按以下参数原样转发：</div>
+            <pre>{{ JSON.stringify(form.args, null, 2) }}</pre>
+          </div>
+          <div v-else-if="form.unchangedCount" class="confirm-unchanged">
+            该接口仅提交以上填写字段，其余 {{ form.unchangedCount }} 个字段保持不变。
+          </div>
+          <div v-if="form.extraArgs.length && form.fields.length" class="confirm-raw">
+            <div class="confirm-raw-tip">以下参数未在接口入参中声明，将原样提交：</div>
+            <pre>{{ extraArgsJson(form) }}</pre>
+          </div>
         </div>
       </div>
       <template #footer>
@@ -406,7 +426,7 @@ import AiViewBlock from '@/components/ai/AiViewBlock.vue'
 import AiMarkdown from '@/components/ai/AiMarkdown.vue'
 import {
   buildInvokeView, inputFieldLabel, rememberInterfaceConfig, rememberInterfaceFields,
-  splitViewSegments, toolResultText,
+  rememberedInterfaceFields, rememberedInterfaceName, splitViewSegments, toolResultText,
   type AiSegment, type AiView
 } from '@/utils/aiView'
 import { renderMarkdown } from '@/utils/markdown'
@@ -444,8 +464,16 @@ interface ConfirmForm {
   toolCallId: string
   name: string
   interfaceName?: string
+  interfaceCode?: string
+  riskLevel?: string
   fields: AiFieldDef[]
+  /** 本次实际提交的字段：有值的字段 + 缺失的必填字段 */
+  submittedFields: AiFieldDef[]
+  /** 未提交、保持原值的字段数 */
+  unchangedCount: number
   args: Record<string, any>
+  /** 未在接口入参声明、但会原样提交的字段 */
+  extraArgs: string[]
   /** 原始 tool input（含 interfaceCode），确认时只替换其中的 args */
   fullInput: Record<string, any>
 }
@@ -476,6 +504,8 @@ const input = ref('')
 const attachments = ref<UploadItem[]>([])
 const streaming = ref(false)
 const thinkingOpen = ref(new Set<string>())
+/** 工具结果默认展开，点击标题收起 */
+const toolCollapsed = ref(new Set<string>())
 const scrollEl = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -1181,21 +1211,87 @@ onBeforeUnmount(() => {
 
 // ==================== 确认表单 ====================
 
+/**
+ * 模型/事件里的入参可能是对象、JSON 字符串，或把参数平铺在 input 上。
+ * 统一还原为 { input, args }，保证确认表单能展示全部参数。
+ */
+function normalizeToolInput(raw: any): { input: Record<string, any>; args: Record<string, any> } {
+  let input = raw
+  if (typeof input === 'string') {
+    try {
+      input = JSON.parse(input)
+    } catch (e) {
+      input = {}
+    }
+  }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) input = {}
+  let args = input.args
+  if (typeof args === 'string') {
+    try {
+      args = JSON.parse(args)
+    } catch (e) {
+      args = {}
+    }
+  }
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    // 兼容模型把参数平铺在 input 上：除 interfaceCode / args 外的字段都视为入参
+    const { interfaceCode, args: invalidArgs, ...rest } = input
+    args = rest
+  }
+  return { input, args: { ...args } }
+}
+
+function normalizeFields(raw: any): AiFieldDef[] {
+  if (Array.isArray(raw)) return raw
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed : []
+    } catch (e) {
+      return []
+    }
+  }
+  return []
+}
+
 function openConfirm(event: ChatEvent) {
   confirmState.replyId = event.replyId || ''
   confirmForms.value = (event.toolCalls || []).map((call: any) => {
-    rememberInterfaceFields(call.input?.interfaceCode, call.interfaceName, call.inputSchema)
-    const args = { ...(call.input?.args || {}) }
+    const { input, args } = normalizeToolInput(call.input)
+    const interfaceCode = typeof input.interfaceCode === 'string' ? input.interfaceCode : ''
+    const declared = normalizeFields(call.inputSchema)
+    // 事件未带 inputSchema 时用 get_interface_config 的缓存兜底，避免确认表单缺少参数项
+    const fields = declared.length ? declared : rememberedInterfaceFields(interfaceCode)
+    const interfaceName = call.interfaceName || rememberedInterfaceName(interfaceCode)
+    rememberInterfaceFields(interfaceCode, interfaceName, fields)
+    const declaredKeys = new Set(fields.map((field) => field.key))
+    // 写接口通常只提交变更字段：有值的字段才展示，避免用户误以为空字段是数据缺失
+    const submittedFields = fields.filter((field) => field.required
+      || Object.prototype.hasOwnProperty.call(args, field.key))
     return {
       toolCallId: call.id,
       name: call.name,
-      interfaceName: call.interfaceName,
-      fields: call.inputSchema || [],
+      interfaceName,
+      interfaceCode,
+      riskLevel: call.riskLevel,
+      fields,
+      submittedFields,
+      unchangedCount: fields.length - submittedFields.length,
       args,
-      fullInput: { ...(call.input || {}), args }
+      extraArgs: Object.keys(args).filter((key) => !declaredKeys.has(key)),
+      fullInput: { ...input, args }
     } as ConfirmForm
   })
   confirmState.visible = true
+}
+
+/** 未在接口入参中声明的参数同样会提交，单独列出让用户核对。 */
+function extraArgsJson(form: ConfirmForm) {
+  const extra: Record<string, any> = {}
+  form.extraArgs.forEach((key) => {
+    extra[key] = form.args[key]
+  })
+  return JSON.stringify(extra, null, 2)
 }
 
 async function submitConfirm(confirmed: boolean) {
@@ -1707,6 +1803,17 @@ function toggleThinking(id: string) {
   if (thinkingOpen.value.has(id)) thinkingOpen.value.delete(id)
   else thinkingOpen.value.add(id)
   thinkingOpen.value = new Set(thinkingOpen.value)
+}
+
+/** 工具卡片无结果或视图时不响应收起，避免点击无反馈。 */
+function hasToolBody(tool: UiTool) {
+  return !!(tool.view || tool.result)
+}
+
+function toggleTool(id: string) {
+  if (toolCollapsed.value.has(id)) toolCollapsed.value.delete(id)
+  else toolCollapsed.value.add(id)
+  toolCollapsed.value = new Set(toolCollapsed.value)
 }
 
 function toolLabel(name?: string) {
@@ -2478,6 +2585,29 @@ function followStreamTail(selector: string) {
   font-size: 13px;
 }
 
+.tool-head.is-toggle {
+  cursor: pointer;
+}
+
+.tool-arrow {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #97a1b6;
+  transition: transform 0.15s;
+}
+
+.tool-arrow.open {
+  transform: rotate(90deg);
+}
+
+.tool-head.is-toggle:hover .tool-name {
+  color: #3b5bdb;
+}
+
+.tool-body {
+  min-width: 0;
+}
+
 .tool-dot {
   flex: 0 0 auto;
   width: 7px;
@@ -2956,6 +3086,12 @@ function followStreamTail(selector: string) {
 }
 
 /* ============ 确认弹窗 ============ */
+.confirm-body {
+  max-height: 62vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 .confirm-tip {
   color: #8f959e;
   font-size: 12px;
@@ -2970,8 +3106,34 @@ function followStreamTail(selector: string) {
 }
 
 .confirm-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 600;
   margin-bottom: 12px;
+}
+
+.confirm-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirm-code {
+  color: #a4adbe;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.confirm-unchanged {
+  padding: 9px 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  background: #f7f9fd;
+  color: #8f959e;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .confirm-raw {
@@ -3225,6 +3387,7 @@ function followStreamTail(selector: string) {
 .prompt-canvas::-webkit-scrollbar,
 .thinking-text::-webkit-scrollbar,
 .tool-result::-webkit-scrollbar,
+.confirm-body::-webkit-scrollbar,
 .confirm-raw pre::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -3236,6 +3399,7 @@ function followStreamTail(selector: string) {
 .prompt-canvas::-webkit-scrollbar-thumb,
 .thinking-text::-webkit-scrollbar-thumb,
 .tool-result::-webkit-scrollbar-thumb,
+.confirm-body::-webkit-scrollbar-thumb,
 .confirm-raw pre::-webkit-scrollbar-thumb {
   background-color: rgba(148, 163, 184, 0.24);
   border: 2px solid transparent;
@@ -3249,6 +3413,7 @@ function followStreamTail(selector: string) {
 .prompt-canvas::-webkit-scrollbar-thumb:hover,
 .thinking-text::-webkit-scrollbar-thumb:hover,
 .tool-result::-webkit-scrollbar-thumb:hover,
+.confirm-body::-webkit-scrollbar-thumb:hover,
 .confirm-raw pre::-webkit-scrollbar-thumb:hover {
   background-color: rgba(148, 163, 184, 0.45);
 }
@@ -3259,6 +3424,7 @@ function followStreamTail(selector: string) {
 .prompt-canvas::-webkit-scrollbar-track,
 .thinking-text::-webkit-scrollbar-track,
 .tool-result::-webkit-scrollbar-track,
+.confirm-body::-webkit-scrollbar-track,
 .confirm-raw pre::-webkit-scrollbar-track {
   background: transparent;
 }

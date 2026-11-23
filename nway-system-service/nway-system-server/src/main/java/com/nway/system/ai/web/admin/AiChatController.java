@@ -1,5 +1,6 @@
 package com.nway.system.ai.web.admin;
 
+import com.alibaba.fastjson2.JSON;
 import com.nway.system.ai.domain.AiInterfaceConfig;
 import com.nway.system.ai.service.AiAuditService;
 import com.nway.system.ai.service.AiInterfaceService;
@@ -250,23 +251,47 @@ public class AiChatController {
                 continue;
             }
             Map<String, Object> call = (Map<String, Object>) item;
-            Object inputObj = call.get("input");
-            if (!(inputObj instanceof Map<?, ?> input)) {
+            Map<String, Object> input = normalizeInput(call.get("input"));
+            if (input == null) {
                 continue;
             }
             Object codeObj = input.get("interfaceCode");
             if (codeObj == null) {
                 continue;
             }
-            com.nway.system.ai.domain.AiInterfaceConfig config =
-                    interfaceService.getPublishedByCode(user.effectiveTenantCode(), String.valueOf(codeObj));
+            String interfaceCode = String.valueOf(codeObj);
+            AiInterfaceConfig config = interfaceService.getPublishedByCode(
+                    user.effectiveTenantCode(), interfaceCode);
+            if (config == null) {
+                // 跨租户共享的接口可能不在当前租户的已发布列表中，按编码兜底
+                config = interfaceService.getAnyPublishedByCode(interfaceCode);
+            }
             if (config == null) {
                 continue;
             }
+            // 事件里的 input 可能是 JSON 字符串，统一回写为对象，前端才能取到 args
+            call.put("input", input);
+            call.put("interfaceCode", config.getInterfaceCode());
             call.put("interfaceName", config.getName());
             call.put("riskLevel", config.getRiskLevel());
             call.put("inputSchema", schemaCompiler.modelFields(config));
         }
+    }
+
+    /** tool input 可能是 Map，也可能是模型返回的 JSON 字符串。 */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> normalizeInput(Object raw) {
+        if (raw instanceof Map<?, ?> map) {
+            return (Map<String, Object>) map;
+        }
+        if (raw instanceof String text && text.trim().startsWith("{")) {
+            try {
+                return JSON.parseObject(text);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private SseEmitter errorEmitter(Throwable error) {

@@ -50,7 +50,7 @@
             <el-table-column prop="name" label="名称" min-width="150" />
             <el-table-column prop="interfaceCode" label="接口编码" min-width="150" />
             <el-table-column prop="description" label="描述" min-width="250" show-overflow-tooltip />
-            <el-table-column label="应用" width="100">
+            <el-table-column label="应用" width="110">
               <template #default="scope">
                 <el-tooltip v-if="scope.row.appCode" :content="scope.row.appCode" placement="top">
                   <span>{{ appLabel(scope.row.appCode) }}</span>
@@ -58,7 +58,7 @@
                 <span v-else>-</span>
               </template>
             </el-table-column>
-            <el-table-column label="租户" width="130">
+            <el-table-column label="租户" width="120">
               <template #default="scope">
                 <el-tag v-if="scope.row.tenantCode === 'public'" size="small" type="warning">公共租户</el-tag>
                 <el-tooltip v-else-if="scope.row.tenantCode" :content="scope.row.tenantCode" placement="top">
