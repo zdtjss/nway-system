@@ -27,7 +27,9 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import com.nway.system.ai.service.AiChatFileService;
 import com.nway.system.ai.service.AiChatService;
 import com.nway.system.ai.service.AiConversationService;
+import com.nway.system.ai.service.AiModelService;
 import com.nway.system.ai.service.AiUserContexts;
+import com.nway.system.ai.web.model.AiChatModelVo;
 import com.nway.system.ai.web.model.AiChatRequest;
 import com.nway.system.ai.web.model.AiConfirmRequest;
 import com.nway.system.ai.web.model.AiConversationVo;
@@ -57,18 +59,20 @@ public class AiChatController {
     private final AiChatService chatService;
     private final AiConversationService conversationService;
     private final AiChatFileService fileService;
+    private final AiModelService modelService;
     private final com.nway.system.ai.service.AiInterfaceService interfaceService;
     private final com.nway.system.ai.service.AiSchemaCompiler schemaCompiler;
     private final com.nway.system.ai.service.AiAuditService auditService;
 
     public AiChatController(AiChatService chatService, AiConversationService conversationService,
-                            AiChatFileService fileService,
+                            AiChatFileService fileService, AiModelService modelService,
                             com.nway.system.ai.service.AiInterfaceService interfaceService,
                             com.nway.system.ai.service.AiSchemaCompiler schemaCompiler,
                             com.nway.system.ai.service.AiAuditService auditService) {
         this.chatService = chatService;
         this.conversationService = conversationService;
         this.fileService = fileService;
+        this.modelService = modelService;
         this.interfaceService = interfaceService;
         this.schemaCompiler = schemaCompiler;
         this.auditService = auditService;
@@ -102,6 +106,14 @@ public class AiChatController {
         } catch (Exception e) {
             return errorEmitter(e);
         }
+    }
+
+    // ==================== 模型 ====================
+
+    /** 对话页可选模型：用户只能看到并使用当前租户可用、启用中的模型。 */
+    @GetMapping("chat/models")
+    public Result<List<AiChatModelVo>> chatModels() {
+        return Result.ok(modelService.listChatModels(AiUserContexts.current().effectiveTenantCode()));
     }
 
     // ==================== 会话 ====================

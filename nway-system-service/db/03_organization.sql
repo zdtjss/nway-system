@@ -1,6 +1,15 @@
 -- ========================================
--- 02. 部门 + 岗位 + 跨部门任职表（DDL）
---   来源：原 02_dept_position.sql 建表部分（初始化数据已移至 20_demo_org_data.sql）
+-- 03. 组织架构：部门、岗位与任职关系（DDL）
+--   覆盖：
+--     - sys_dept：部门（层级编码设计）
+--     - sys_user_dept：用户部门关系（跨部门任职）
+--     - sys_position：岗位（部门下的岗位编制实例）
+--     - sys_user_position：用户岗位关系
+--   前置：01_platform_tenant_app.sql（tenant_code 语义）
+--   说明：
+--     - 演示用集团组织架构数据见 demo/01_organization_demo.sql（可选）
+--     - sys_user_dept 的唯一索引 uidx_user_dept 不区分 is_deleted，
+--       代码层删除必须物理删除（见 SysUserDeptDao），否则重新任职同一部门会撞唯一键
 -- ========================================
 
 -- 部门表（层级编码设计）

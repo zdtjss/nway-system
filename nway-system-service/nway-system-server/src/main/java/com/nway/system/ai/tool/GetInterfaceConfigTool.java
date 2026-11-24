@@ -93,7 +93,7 @@ public class GetInterfaceConfigTool extends ToolBase {
             }
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("candidates", List.of(candidate(config, 1.0)));
-            body.put("next", "调用 invoke_interface(interfaceCode, args)，args 只包含 inputSchema 中的字段；回答只使用 outputSchema 定义的字段");
+            body.put("next", "调用 query_interface（默认直返）或 invoke_interface（分析/多步/写操作），args 只包含 inputSchema 中的字段；回答只使用 outputSchema 定义的字段");
             log.info("工具调用完成 tool={} session={} toolCallId={} interfaceCode={} candidates=1 elapsed={}ms",
                     NAME, sessionId, toolCallId, interfaceCode, System.currentTimeMillis() - start);
             return ToolResultBlock.text(JSON.toJSONString(body));
@@ -128,9 +128,9 @@ public class GetInterfaceConfigTool extends ToolBase {
         body.put("candidates", candidates);
         if (lowConfidence) {
             body.put("lowConfidence", true);
-            body.put("next", "候选置信度低，不要调用 invoke_interface；先向用户确认业务对象，或说明暂未找到对应接口");
+            body.put("next", "候选置信度低，不要调用 query_interface 或 invoke_interface；先向用户确认业务对象，或说明暂未找到对应接口");
         } else {
-            body.put("next", "选择最匹配的 interfaceCode，补充用户已明确的信息后调用 invoke_interface；缺失必填字段时先向用户追问");
+            body.put("next", "选择最匹配的 interfaceCode，补充用户已明确的信息后调用：一次查询默认用 query_interface；需要分析、多步调用或写操作时用 invoke_interface；缺失必填字段时先向用户追问");
         }
         log.info("工具调用完成 tool={} session={} toolCallId={} query={} candidates={} top={} lowConfidence={} elapsed={}ms",
                 NAME, sessionId, toolCallId, AiLogs.truncate(searchText, 120), candidates.size(),

@@ -1,9 +1,11 @@
 -- ========================================
--- 04. 字典 + 系统配置表（DDL，最终版结构）
---   来源：原 05_dict_config.sql，其中：
---     - sys_dict_item 采用 11_dict_item_refactor.sql 重构后的最终结构（无 item_key/item_text）
---     - sys_config 采用 10_sys_config.sql 重构后的最终结构
---   存量库如需升级旧结构，需另行补充增量升级脚本
+-- 05. 字典与系统配置（DDL）
+--   覆盖：
+--     - sys_dict_type：字典类别（通用多字段类字典）
+--     - sys_dict_item：字典项（最终结构：数据统一存 item_value JSON，无 item_key/item_text 列）
+--     - sys_config：系统配置（最终结构：config_name/remark/status，config_group 默认 system）
+--   前置：01_platform_tenant_app.sql（tenant_code 语义）
+--   说明：演示用岗位职级 / 岗位名称字典见 demo/02_dict_demo.sql（可选）
 -- ========================================
 
 -- 字典类别

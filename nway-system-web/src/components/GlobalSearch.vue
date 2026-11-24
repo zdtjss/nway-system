@@ -12,21 +12,18 @@
         <!-- 悬停时在图标一侧上下排列的两个入口：菜单搜索、办公智能体 -->
         <transition name="gs-actions">
             <div v-if="actionsVisible" class="gs-actions" :class="'gs-' + placement.horizontal">
-                <button type="button" class="gs-action" title="菜单搜索"
-                    @pointerdown.stop @click.stop="startMenuSearch">
-                    <el-icon><Menu /></el-icon>
-                </button>
-                <button type="button" class="gs-action gs-action-ai" title="AI 助手"
-                    @pointerdown.stop @click.stop="startAiChat">
+                <button type="button" class="gs-action gs-action-ai" title="AI 助手" @pointerdown.stop @click.stop="startAiChat">
                     <el-icon><ChatDotRound /></el-icon>
+                </button>
+                <button type="button" class="gs-action" title="菜单搜索" @pointerdown.stop @click.stop="startMenuSearch">
+                    <el-icon><Menu /></el-icon>
                 </button>
             </div>
         </transition>
 
         <!-- 菜单搜索框：点击菜单入口后由图标侧向推出 -->
         <div class="gs-panel" :class="'gs-' + placement.horizontal">
-            <input ref="inputRef" v-model="keyword" class="gs-input" type="text" placeholder="请输入菜单名称"
-                autocomplete="off" @input="onInput" @keydown="onKeydown">
+            <input ref="inputRef" v-model="keyword" class="gs-input" type="text" placeholder="请输入菜单名称" autocomplete="off" @input="onInput" @keydown="onKeydown">
         </div>
 
         <!-- 菜单搜索结果（浮层，靠图标一侧展开） -->
@@ -51,8 +48,7 @@
             <div v-if="aiOpen" class="gs-ai"
                 :class="['gs-ai-' + aiVertical, 'gs-ai-h-' + aiPlacement.horizontal]" :style="aiPanelStyle"
                 @keydown.esc.stop.prevent="onAiEscape">
-                <div class="gs-ai-header" :class="{ 'is-dragging': aiDragging }"
-                    @pointerdown="onAiHeaderPointerDown">
+                <div class="gs-ai-header" :class="{ 'is-dragging': aiDragging }" @pointerdown="onAiHeaderPointerDown">
                     <div class="gs-ai-avatar">
                         <el-icon><ChatDotRound /></el-icon>
                     </div>
@@ -63,8 +59,7 @@
                         </div>
                     </div>
                     <div class="gs-ai-head-actions">
-                        <button type="button" class="gs-ai-icon-btn" :class="{ 'is-active': aiHistoryOpen }"
-                            title="历史记录" @click="toggleAiHistory">
+                        <button type="button" class="gs-ai-icon-btn" :class="{ 'is-active': aiHistoryOpen }" title="历史记录" @click="toggleAiHistory">
                             <el-icon><Clock /></el-icon>
                         </button>
                         <button type="button" class="gs-ai-icon-btn" title="新对话" @click="newAiChat">
@@ -90,8 +85,7 @@
                             <el-icon><Close /></el-icon>
                         </button>
                     </div>
-                    <el-input v-model="aiHistoryKeyword" class="gs-ai-history-search" size="small" clearable
-                        placeholder="搜索会话标题" :prefix-icon="Search" />
+                    <el-input v-model="aiHistoryKeyword" class="gs-ai-history-search" size="small" clearable  placeholder="搜索会话标题" :prefix-icon="Search" />
                     <div v-loading="aiHistoryLoading" class="gs-ai-history-list">
                         <div v-for="conv in aiConversations" :key="conv.id" class="gs-ai-history-item"
                             :class="{ active: conv.id === aiConversationId }" @click="openAiConversation(conv)">
@@ -123,39 +117,30 @@
                         <div class="gs-ai-bubble"
                             :class="{ 'is-error': !!msg.error, 'has-view': hasAiView(msg) || hasAiTable(msg) }">
                             <template v-if="msg.role === 'assistant'">
-                                <div v-if="msg.thinking" class="gs-ai-thinking"
-                                    :class="{ 'is-open': aiThinkingOpen.has(msg.id) }">
-                                    <button type="button" class="gs-ai-thinking-head"
-                                        @click="toggleAiThinking(msg.id)">
-                                        <el-icon class="gs-ai-thinking-arrow"
-                                            :class="{ 'is-open': aiThinkingOpen.has(msg.id) }">
+                                <div v-if="msg.thinking" class="gs-ai-thinking" :class="{ 'is-open': aiThinkingOpen.has(msg.id) }">
+                                    <button type="button" class="gs-ai-thinking-head" @click="toggleAiThinking(msg.id)">
+                                        <el-icon class="gs-ai-thinking-arrow" :class="{ 'is-open': aiThinkingOpen.has(msg.id) }">
                                             <ArrowRight />
                                         </el-icon>
                                         <span>思考过程</span>
-                                        <span v-if="msg.streaming && !msg.text"
-                                            class="gs-ai-thinking-live">思考中…</span>
+                                        <span v-if="msg.streaming && !msg.text" class="gs-ai-thinking-live">思考中…</span>
                                     </button>
-                                    <pre v-show="aiThinkingOpen.has(msg.id)" class="gs-ai-thinking-text"
-                                        @scroll="trackFollowScroll">{{ msg.thinking }}</pre>
+                                    <pre v-show="aiThinkingOpen.has(msg.id)" class="gs-ai-thinking-text" @scroll="trackFollowScroll">{{ msg.thinking }}</pre>
                                 </div>
                                 <template v-for="tool in msg.tools || []" :key="tool.id">
                                     <div v-if="tool.view" class="gs-ai-tool"
                                         :class="{ 'is-open': !aiToolCollapsed.has(tool.id), 'is-failed': tool.view.success === false }">
-                                        <button type="button" class="gs-ai-tool-head"
-                                            @click="toggleAiTool(tool.id)">
-                                            <el-icon class="gs-ai-tool-arrow"
-                                                :class="{ 'is-open': !aiToolCollapsed.has(tool.id) }">
+                                        <button type="button" class="gs-ai-tool-head" @click="toggleAiTool(tool.id)">
+                                            <el-icon class="gs-ai-tool-arrow" :class="{ 'is-open': !aiToolCollapsed.has(tool.id) }">
                                                 <ArrowRight />
                                             </el-icon>
                                             <span class="gs-ai-tool-name">
                                                 {{ tool.view.interfaceName || '接口调用结果' }}
                                             </span>
-                                            <span v-if="tool.view.success === false"
-                                                class="gs-ai-tool-flag">调用失败</span>
+                                            <span v-if="tool.view.success === false" class="gs-ai-tool-flag">调用失败</span>
                                         </button>
                                         <div v-show="!aiToolCollapsed.has(tool.id)" class="gs-ai-tool-body">
-                                            <div v-if="tool.view.message" class="gs-ai-tool-msg"
-                                                :class="{ 'is-error': tool.view.success === false }">
+                                            <div v-if="tool.view.message" class="gs-ai-tool-msg" :class="{ 'is-error': tool.view.success === false }">
                                                 {{ tool.view.message }}
                                             </div>
                                             <AiViewBlock v-if="tool.view.success !== false" :view="tool.view" compact />
@@ -163,10 +148,8 @@
                                     </div>
                                 </template>
                                 <template v-for="(segment, index) in msg.segments" :key="index">
-                                    <AiMarkdown v-if="segment.type === 'text' && segment.text"
-                                        class="gs-ai-text" :text="segment.text" :streaming="msg.streaming" />
-                                    <AiViewBlock v-else-if="segment.type === 'view' && segment.view" class="gs-ai-view"
-                                        :view="segment.view" compact />
+                                    <AiMarkdown v-if="segment.type === 'text' && segment.text" class="gs-ai-text" :text="segment.text" :streaming="msg.streaming" />
+                                    <AiViewBlock v-else-if="segment.type === 'view' && segment.view" class="gs-ai-view" :view="segment.view" compact />
                                     <div v-else-if="segment.type === 'pending'" class="gs-ai-pending">正在整理数据…</div>
                                 </template>
                                 <div v-if="msg.streaming && !msg.text" class="gs-ai-typing">
@@ -999,6 +982,11 @@ function toggleAiTool(id) {
 
 const CONFIG_TOOL = 'get_interface_config'
 const INVOKE_TOOL = 'invoke_interface'
+const QUERY_TOOL = 'query_interface'
+
+function isResultTool(name) {
+    return name === INVOKE_TOOL || name === QUERY_TOOL
+}
 // get_interface_config 的流式结果先暂存，结束后整体解析为接口字段定义
 const aiPendingConfig = new Map()
 
@@ -1023,10 +1011,10 @@ function handleAiEvent(event, target) {
             break
         case 'tool.call.start':
             target.toolTip = '正在调用：' + (event.name || '工具')
-            if (event.name === INVOKE_TOOL) {
+            if (isResultTool(event.name)) {
                 target.tools.push({
                     id: event.toolCallId || aiUid('tool'),
-                    name: INVOKE_TOOL,
+                    name: event.name,
                     status: 'running',
                     result: '',
                     view: null
@@ -1037,7 +1025,7 @@ function handleAiEvent(event, target) {
             if (event.name === CONFIG_TOOL) {
                 const key = event.toolCallId || ''
                 aiPendingConfig.set(key, (aiPendingConfig.get(key) || '') + (event.delta || ''))
-            } else if (event.name === INVOKE_TOOL) {
+            } else if (isResultTool(event.name)) {
                 const tool = target.tools.find((item) => item.id === event.toolCallId)
                 if (tool) tool.result += event.delta || ''
             }
@@ -1048,7 +1036,7 @@ function handleAiEvent(event, target) {
                 const key = event.toolCallId || ''
                 rememberInterfaceConfig(aiPendingConfig.get(key) || '')
                 aiPendingConfig.delete(key)
-            } else if (event.name === INVOKE_TOOL) {
+            } else if (isResultTool(event.name)) {
                 const tool = target.tools.find((item) => item.id === event.toolCallId)
                 if (tool) {
                     tool.status = event.state === 'ERROR' || event.state === 'DENIED' ? 'error' : 'done'
@@ -1069,10 +1057,19 @@ function handleAiEvent(event, target) {
             break
         case 'reply.end':
             target.streaming = false
+            // 思考过程只在流式期间自动展开，结束后收起，避免看起来模型仍在推理
+            if (aiThinkingOpen.value.has(target.id)) {
+                aiThinkingOpen.value.delete(target.id)
+                aiThinkingOpen.value = new Set(aiThinkingOpen.value)
+            }
             syncAiSegments(target)
             break
         case 'error':
             target.streaming = false
+            if (aiThinkingOpen.value.has(target.id)) {
+                aiThinkingOpen.value.delete(target.id)
+                aiThinkingOpen.value = new Set(aiThinkingOpen.value)
+            }
             syncAiSegments(target)
             target.error = event.message || 'AI 服务异常'
             break
@@ -1202,6 +1199,17 @@ async function sendAi() {
 function stopAi() {
     aiAbort?.abort()
     aiStreaming.value = false
+    // 停止后不会再有工具结果事件，为执行中的调用补一条说明，避免留下空白卡片
+    aiMessages.value.forEach((message) => {
+        ;(message.tools || []).forEach((tool) => {
+            if (isResultTool(tool.name) && !tool.view && !tool.result) {
+                tool.view = {
+                    type: 'empty',
+                    text: '本次调用未完成（等待确认或会话已中断），暂无返回结果。'
+                }
+            }
+        })
+    })
 }
 
 // 关键字输入防抖搜索，避免每次按键都请求
@@ -1287,7 +1295,9 @@ async function openAiConversation(conv) {
     try {
         const res = await getMessages(conv.id)
         if (seq !== aiMessageSeq) return
-        aiMessages.value = (res.data || []).map(toPanelMessage)
+        const list = (res.data || []).map(toPanelMessage)
+        restoreCompletedTools(list)
+        aiMessages.value = list
         scrollAiToBottom(true)
     } catch (e) {
         // http 拦截器已提示
@@ -1375,18 +1385,61 @@ function toPanelMessage(message) {
                 rememberInterfaceConfig(block.result)
                 return
             }
+            const result = block.result || ''
+            let view = isResultTool(name) ? buildInvokeView(result) : null
+            if (isResultTool(name) && !view) {
+                // 简易面板不展开原始报文：无结果说明调用未完成，有结果则提示去完整对话查看
+                view = {
+                    type: 'empty',
+                    text: result
+                        ? '接口已返回结果，但内容不便在简易窗口展示，请在完整对话中查看。'
+                        : '本次调用未完成（等待确认或会话已中断），暂无返回结果。'
+                }
+            }
             ui.tools.push({
                 id: block.id || aiUid('tool'),
                 name,
-                status: block.state === 'ERROR' || block.state === 'DENIED' ? 'error' : 'done',
-                result: block.result || '',
-                view: name === INVOKE_TOOL ? buildInvokeView(block.result) : null
+                // 无结果说明调用未完成，不能标成 done 交接给完整对话页
+                status: block.state === 'ERROR' || block.state === 'DENIED'
+                    ? 'error'
+                    : result ? 'done' : 'interrupted',
+                result,
+                view
             })
         }
     })
     ui.text = texts.join('\n')
     ui.segments = splitViewSegments(ui.text, false)
     return ui
+}
+
+/**
+ * 确认执行的写操作，工具结果可能没回填到历史消息里（只有 tool_use 没有 result）。
+ * 该轮之后还有助手正文，说明调用已经执行完成，不能标成未完成。
+ */
+function restoreCompletedTools(messages) {
+    messages.forEach((message, index) => {
+        const tools = message.tools || []
+        if (!tools.some((tool) => tool.status === 'interrupted')) return
+        let completed = false
+        for (let i = index + 1; i < messages.length; i += 1) {
+            const next = messages[i]
+            if (next.role === 'user') break
+            if ((next.text || '').trim()) {
+                completed = true
+                break
+            }
+        }
+        if (!completed) return
+        tools.forEach((tool) => {
+            if (tool.status !== 'interrupted') return
+            tool.status = 'done'
+            tool.view = {
+                type: 'empty',
+                text: '调用已完成，历史记录中未保留返回数据。'
+            }
+        })
+    })
 }
 
 function newAiChat() {

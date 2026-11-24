@@ -125,10 +125,36 @@ export interface AiModelVo {
   temperature?: number
   maxTokens?: number
   supportsToolCalling?: boolean
+  /** null 按模型名自动识别，true 支持，false 不支持 */
+  supportsVision?: boolean | null
+  /** 视觉分析最终生效结果 */
+  visionSupported?: boolean
+  contextWindowTokens?: number | null
+  topP?: number | null
+  frequencyPenalty?: number | null
+  presencePenalty?: number | null
+  reasoningEffort?: string | null
+  thinkingEnabled?: boolean | null
+  thinkingBudget?: number | null
+  extraBody?: string | null
   isDefault?: boolean
   status?: string
   apiKeyConfigured?: boolean
   modifiedTime?: string
+}
+
+/** 对话页可选模型：仅包含用户选择所需字段 */
+export interface AiChatModelVo {
+  id: string
+  name: string
+  modelName?: string
+  isDefault?: boolean
+  /** 是否支持视觉分析（后端已结合模型名自动识别） */
+  supportsVision?: boolean
+  /** 是否开启思考（后端已结合推理深度/思考预算推断） */
+  thinkingEnabled?: boolean
+  reasoningEffort?: string
+  contextWindowTokens?: number
 }
 
 export interface AiPromptVo {
@@ -343,6 +369,10 @@ export const extractPrompt = (body: { conversationId: string; name?: string; pro
 
 // ==================== 会话 ====================
 
+/** 对话页可选模型：后端按当前租户过滤，并只返回启用中的配置 */
+export const listChatModels = () =>
+  http.get<Result<AiChatModelVo[]>>('/ai/chat/models').then((r: any) => r.data)
+
 export const listConversations = (current = 1, size = 50, keyword?: string) =>
   http.get<Result<PageVo<AiConversationVo>>>('/ai/conversations', { params: { current, size, keyword } })
     .then((r: any) => r.data)
@@ -475,6 +505,8 @@ export const streamChat = (
     conversationId?: string | null
     message: string
     fileIds?: string[]
+    /** 用户选择的模型配置 ID；为空时后端使用默认模型 */
+    modelId?: string | null
     pageContext?: AiPageContext | null
   },
   onEvent: (event: ChatEvent) => void,
@@ -482,7 +514,7 @@ export const streamChat = (
 ) => streamSse('/ai/chat/stream', body, onEvent, signal)
 
 export const streamConfirm = (
-  body: { conversationId: string; replyId: string; decisions: any[] },
+  body: { conversationId: string; replyId: string; modelId?: string | null; decisions: any[] },
   onEvent: (event: ChatEvent) => void,
   signal?: AbortSignal
 ) => streamSse('/ai/chat/confirm', body, onEvent, signal)

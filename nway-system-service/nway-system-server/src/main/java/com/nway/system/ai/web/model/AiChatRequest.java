@@ -19,6 +19,9 @@ public class AiChatRequest {
 
     private List<String> fileIds;
 
+    /** 用户选择的模型配置 ID（可选）；为空时使用当前租户默认模型 */
+    private String modelId;
+
     /** 当前页面上下文（可选）：由前端在发送时提取的页面文本快照 */
     private AiPageContext pageContext;
 }

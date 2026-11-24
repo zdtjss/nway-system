@@ -15,6 +15,7 @@ import com.nway.system.ai.domain.AiInvokeResult;
 import com.nway.system.ai.domain.AiUserContext;
 import com.nway.system.ai.domain.AiValidationResult;
 import io.agentscope.core.message.ToolResultBlock;
+import io.agentscope.core.message.ToolResultState;
 import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionDecision;
 import io.agentscope.core.tool.ToolBase;
@@ -25,6 +26,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -32,6 +34,9 @@ import java.util.Map;
  * <p>
  * 写操作通过 {@link #checkPermissions} 返回 ASK，由 AgentScope HITL 弹出确认表单；
  * 用户确认后后端重新校验参数再执行。
+ * <p>
+ * 子类 {@code QueryInterfaceTool} 复用同一套校验与调用逻辑，但声明 returnDirect：
+ * 只读查询结果直接作为本轮答复返回给用户，不再让大模型转述。
  *
  * @author nway
  */
@@ -39,6 +44,17 @@ import java.util.Map;
 public class InvokeInterfaceTool extends ToolBase {
 
     public static final String NAME = "invoke_interface";
+
+    private static final String DESCRIPTION = """
+            调用业务接口，并把结果返回给你继续处理。
+            适用：用户明确要求分析、解读、对比、总结、统计、趋势、建议、判断；需要多次调用接口（含先查参考数据再办理）；写操作（会触发用户确认）。
+            接口返回的数据保持原样，不要修改、删除或自行精简字段。
+            默认不做统计分析：用户未明确要求分析时，不要对结果做汇总统计，也不要复述原始明细。
+            只有用户明确要求分析、解读、对比、总结、统计、趋势、建议、判断时，才基于完整结果作答。
+            args 必须严格使用 get_interface_config 返回的 inputSchema 字段。
+            如果缺少必填信息，先向用户追问，不要猜测。
+            出参以接口 outputSchema 为准：回答只能使用 outputSchema 中定义的字段，不得输出未定义的字段。
+            """;
 
     private static final int MAX_RESULT_LENGTH = 8000;
 
@@ -48,27 +64,36 @@ public class InvokeInterfaceTool extends ToolBase {
     private final AiAuditService auditService;
     private final AiPermissionService permissionService;
     private final com.nway.system.ai.service.AiChatFileService chatFileService;
+    /** true：只读直返查询工具，成功结果直接作为本轮答复，不再进入模型推理。 */
+    private final boolean directQuery;
 
     public InvokeInterfaceTool(AiInterfaceService interfaceService, AiArgumentValidator validator,
                                AiInvoker invoker, AiAuditService auditService,
                                AiPermissionService permissionService,
                                com.nway.system.ai.service.AiChatFileService chatFileService) {
+        this(NAME, DESCRIPTION, false, interfaceService, validator, invoker, auditService,
+                permissionService, chatFileService);
+    }
+
+    protected InvokeInterfaceTool(String name, String description, boolean directQuery,
+                                  AiInterfaceService interfaceService,
+                                  AiArgumentValidator validator,
+                                  AiInvoker invoker, AiAuditService auditService,
+                                  AiPermissionService permissionService,
+                                  com.nway.system.ai.service.AiChatFileService chatFileService) {
         super(ToolBase.builder()
-                .name(NAME)
-                .description("""
-                        调用业务接口。args 必须严格使用 get_interface_config 返回的 inputSchema 字段。
-                        如果缺少必填信息，先向用户追问，不要猜测。
-                        写操作会触发用户确认，确认通过后才会真正提交。
-                        出参以接口 outputSchema 为准：回答只能使用 outputSchema 中定义的字段，不得输出未定义的字段。
-                        """)
+                .name(name)
+                .description(description)
                 .inputSchema(inputSchema())
-                .readOnly(false));
+                .readOnly(directQuery)
+                .returnDirect(directQuery));
         this.interfaceService = interfaceService;
         this.validator = validator;
         this.invoker = invoker;
         this.auditService = auditService;
         this.permissionService = permissionService;
         this.chatFileService = chatFileService;
+        this.directQuery = directQuery;
     }
 
     @Override
@@ -77,6 +102,11 @@ public class InvokeInterfaceTool extends ToolBase {
         String interfaceCode = input == null ? null : string(input.get("interfaceCode"));
         AiInterfaceConfig config = interfaceService.getAnyPublishedByCode(interfaceCode);
         if (config != null && config.isWrite()) {
+            if (directQuery) {
+                // 直返查询工具不允许写操作：放行到执行阶段返回可修正的错误，
+                // 避免 stopOnReject 直接终止本轮，让模型改用 invoke_interface。
+                return Mono.just(PermissionDecision.allow("查询工具拒绝写操作"));
+            }
             return Mono.just(PermissionDecision.ask("写操作需要确认：" + config.getName()));
         }
         return Mono.just(PermissionDecision.allow("只读接口"));
@@ -97,27 +127,33 @@ public class InvokeInterfaceTool extends ToolBase {
                 ? null : param.getRuntimeContext().get(AiUserContext.class);
         if (user == null) {
             log.warn("工具调用失败 tool={} session={} toolCallId={} error=缺少用户上下文",
-                    NAME, sessionId, toolCallId);
+                    getName(), sessionId, toolCallId);
             return error(AiErrors.USER_CONTEXT_MISSING, "缺少用户上下文", null);
         }
         Map<String, Object> input = param.getInput() == null ? Map.of() : param.getInput();
         String interfaceCode = string(input.get("interfaceCode"));
         if (StringUtils.isBlank(interfaceCode)) {
             log.warn("工具调用失败 tool={} session={} toolCallId={} error=interfaceCode 为空",
-                    NAME, sessionId, toolCallId);
+                    getName(), sessionId, toolCallId);
             return error(AiErrors.INVALID_ARGUMENT, "interfaceCode 不能为空", null);
         }
         AiInterfaceConfig config = interfaceService.getPublishedByCode(user.effectiveTenantCode(), interfaceCode);
         if (config == null) {
             log.warn("工具调用失败 tool={} session={} toolCallId={} interfaceCode={} error=接口不存在或未发布",
-                    NAME, sessionId, toolCallId, interfaceCode);
+                    getName(), sessionId, toolCallId, interfaceCode);
             return error(AiErrors.NO_MATCH, "接口不存在或未发布：" + interfaceCode, interfaceCode);
+        }
+        if (directQuery && config.isWrite()) {
+            log.warn("查询工具拒绝写操作 tool={} session={} toolCallId={} interfaceCode={}",
+                    getName(), sessionId, toolCallId, interfaceCode);
+            return error(AiErrors.PERMISSION_DENIED,
+                    "该工具只支持只读查询，写操作请使用 invoke_interface：" + config.getName(), interfaceCode);
         }
         AiPermissionService.PermissionDecision permission = permissionService.evaluate(user, config);
         if (!permission.allowed()) {
             log.warn("工具调用失败 tool={} session={} toolCallId={} interfaceCode={} employeeId={} "
                             + "error=无调用权限 reason={} decisionId={}",
-                    NAME, sessionId, toolCallId, interfaceCode, user.getEmployeeId(),
+                    getName(), sessionId, toolCallId, interfaceCode, user.getEmployeeId(),
                     permission.reason(), permission.decisionId());
             return error(AiErrors.PERMISSION_DENIED, "当前用户无权调用：" + config.getName(), interfaceCode);
         }
@@ -128,29 +164,29 @@ public class InvokeInterfaceTool extends ToolBase {
         AiValidationResult validation = validator.validate(config, args, user);
         if (!validation.isValid()) {
             log.warn("工具调用参数校验失败 tool={} session={} toolCallId={} interfaceCode={} error={} message={}",
-                    NAME, sessionId, toolCallId, interfaceCode, validation.getErrorCode(),
+                    getName(), sessionId, toolCallId, interfaceCode, validation.getErrorCode(),
                     validation.getMessage());
             return error(validation.getErrorCode(), validation.getMessage(), interfaceCode);
         }
         String fileError = validateFiles(config, validation.getValues(), user);
         if (fileError != null) {
             log.warn("工具调用附件校验失败 tool={} session={} toolCallId={} interfaceCode={} message={}",
-                    NAME, sessionId, toolCallId, interfaceCode, fileError);
+                    getName(), sessionId, toolCallId, interfaceCode, fileError);
             return error(AiErrors.INVALID_ARGUMENT, fileError, interfaceCode);
         }
 
         log.info("工具调用开始 tool={} session={} toolCallId={} interfaceCode={} write={} args={}",
-                NAME, sessionId, toolCallId, interfaceCode, config.isWrite(),
+                getName(), sessionId, toolCallId, interfaceCode, config.isWrite(),
                 AiLogs.summarizeArgs(validation.getValues()));
         AiInvokeResult result = invoker.invoke(config, validation.getValues(), user);
         auditService.recordInvoke(user, interfaceCode, validation.getValues(), result);
         long elapsed = System.currentTimeMillis() - start;
         if (result.isSuccess()) {
             log.info("工具调用完成 tool={} session={} toolCallId={} interfaceCode={} latency={}ms elapsed={}ms",
-                    NAME, sessionId, toolCallId, interfaceCode, result.getLatencyMs(), elapsed);
+                    getName(), sessionId, toolCallId, interfaceCode, result.getLatencyMs(), elapsed);
         } else {
             log.warn("工具调用失败 tool={} session={} toolCallId={} interfaceCode={} error={} message={} "
-                            + "latency={}ms elapsed={}ms", NAME, sessionId, toolCallId, interfaceCode,
+                            + "latency={}ms elapsed={}ms", getName(), sessionId, toolCallId, interfaceCode,
                     result.getErrorCode(), result.getMessage(), result.getLatencyMs(), elapsed);
         }
         if (!result.isSuccess()) {
@@ -160,7 +196,8 @@ public class InvokeInterfaceTool extends ToolBase {
             body.put("error", result.getErrorCode());
             body.put("message", result.getMessage());
             body.put("latencyMs", result.getLatencyMs());
-            return ToolResultBlock.text(truncate(JSON.toJSONString(body)));
+            return ToolResultBlock.text(truncate(JSON.toJSONString(body)))
+                    .withState(ToolResultState.ERROR);
         }
 
         Map<String, Object> body = new LinkedHashMap<>();
@@ -168,7 +205,9 @@ public class InvokeInterfaceTool extends ToolBase {
         body.put("interfaceCode", interfaceCode);
         body.put("code", result.getCode());
         body.put("message", result.getMessage());
+        // 接口返回的数据原样保留；是否需要统计/分析由用户问题决定，不修改接口结果
         body.put("data", result.getData());
+        body.put("next", "接口结果已展示；用户未明确要求分析时，不要对数据做统计分析，也不要复述原始明细。");
         body.put("latencyMs", result.getLatencyMs());
         return ToolResultBlock.text(truncate(JSON.toJSONString(body)));
     }
@@ -209,7 +248,7 @@ public class InvokeInterfaceTool extends ToolBase {
         }
         body.put("error", code);
         body.put("message", message);
-        return ToolResultBlock.text(JSON.toJSONString(body));
+        return ToolResultBlock.text(JSON.toJSONString(body)).withState(ToolResultState.ERROR);
     }
 
     private String truncate(String json) {
@@ -235,7 +274,7 @@ public class InvokeInterfaceTool extends ToolBase {
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
         schema.put("properties", properties);
-        schema.put("required", java.util.List.of("interfaceCode", "args"));
+        schema.put("required", List.of("interfaceCode", "args"));
         return schema;
     }
 }

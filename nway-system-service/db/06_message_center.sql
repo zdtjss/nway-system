@@ -1,6 +1,8 @@
 -- ========================================
--- 03. 消息系统表（DDL）
---   来源：原 04_message.sql + 09_add_indexes.sql 中消息接收人补充索引
+-- 06. 消息中心：消息主表、目标、接收人与发送日志（DDL）
+--   覆盖：message_info / message_target / message_receiver / message_send_log
+--   前置：01_platform_tenant_app.sql（tenant_code 语义）
+--   说明：消息发送渠道、重试与已读状态均由本场景表承载
 -- ========================================
 
 -- 消息主表

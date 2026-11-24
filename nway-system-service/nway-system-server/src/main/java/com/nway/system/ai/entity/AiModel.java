@@ -31,10 +31,38 @@ public class AiModel extends BaseEntity {
 
     private BigDecimal temperature;
 
+    /** 单次输出上限 */
     private Integer maxTokens;
 
     /** 是否支持工具调用 */
     private Boolean supportsToolCalling;
+
+    /** 是否支持视觉分析；为空时按模型名自动识别 */
+    private Boolean supportsVision;
+
+    /** 最大上下文 token；为空时按模型名自动识别 */
+    private Integer contextWindowTokens;
+
+    /** 核采样 top_p */
+    private BigDecimal topP;
+
+    /** 频率惩罚 -2 ~ 2 */
+    private BigDecimal frequencyPenalty;
+
+    /** 存在惩罚 -2 ~ 2 */
+    private BigDecimal presencePenalty;
+
+    /** 推理深度：low/medium/high/max 等 */
+    private String reasoningEffort;
+
+    /** 是否思考；为空表示使用模型默认行为 */
+    private Boolean thinkingEnabled;
+
+    /** 思考 token 预算 */
+    private Integer thinkingBudget;
+
+    /** 额外请求参数 JSON（厂商专有参数，如 enable_thinking） */
+    private String extraBody;
 
     /** 是否默认 Provider */
     private Boolean isDefault;

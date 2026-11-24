@@ -363,9 +363,20 @@ export function buildInvokeView(raw?: string | null): AiView | null {
     ? { key: '', label: '', type: 'OBJECT', properties: meta.outputs }
     : undefined
   const resolved = resolveInvokeData(result.data, root)
-  if (resolved.value === null || resolved.value === undefined) return view
+  if (resolved.value === null || resolved.value === undefined) {
+    fillEmptyMessage(view)
+    return view
+  }
   fillDataView(view, resolved.value, meta?.fields, resolved.node)
+  fillEmptyMessage(view)
   return view
+}
+
+/** 直返查询不再经过模型转述，空结果需要给出明确文案，避免卡片一片空白。 */
+function fillEmptyMessage(view: AiView) {
+  if (view.success && view.type === 'empty' && !view.message) {
+    view.message = '查询完成，暂无数据'
+  }
 }
 
 /**
@@ -426,6 +437,15 @@ function schemaChild(node: OutputFieldMeta | undefined, key: string): OutputFiel
   return node?.properties?.find((field) => field.key === key)
 }
 
+/** 接口结果卡只展示业务明细，不展示接口返回的汇总/统计字段；接口原始数据不修改，分析由模型在正文完成。 */
+const ANALYSIS_FIELD_KEYS = new Set([
+  'summary', 'summaries', 'statistics', 'stats', 'aggregate', 'aggregation', '汇总', '统计'
+])
+
+function isAnalysisField(key: string): boolean {
+  return ANALYSIS_FIELD_KEYS.has(String(key || '').trim().toLowerCase())
+}
+
 /** 数据本体按结构渲染：对象列表转表格，标量清单转列表，其余按字段逐项展示。 */
 function fillDataView(view: AiView, data: any, fields?: Map<string, FieldMeta>, node?: OutputFieldMeta) {
   if (Array.isArray(data)) {
@@ -453,14 +473,15 @@ function fillDataView(view: AiView, data: any, fields?: Map<string, FieldMeta>, 
     if (!entries.length) return
     // 分页结构（如 { total, list }）：列表转表格，其余标量字段作为摘要展示
     const listEntry = entries
-      .filter(([, value]) => Array.isArray(value) && value.length > 0 && value.every(isPlainObject))
+      .filter(([key, value]) => !isAnalysisField(key)
+        && Array.isArray(value) && value.length > 0 && value.every(isPlainObject))
       .sort((a, b) => (b[1] as any[]).length - (a[1] as any[]).length)[0]
     if (listEntry) {
       const [listKey, listValue] = listEntry
       fillTableView(view, listValue as any[], fields, fieldLabel(listKey, fields),
         schemaChild(node, listKey)?.items?.properties)
       view.fields = entries
-        .filter(([key]) => key !== listKey)
+        .filter(([key]) => key !== listKey && !isAnalysisField(key))
         .map(([key, value]) => ({
           key,
           label: fieldLabel(key, fields),
@@ -468,8 +489,14 @@ function fillDataView(view: AiView, data: any, fields?: Map<string, FieldMeta>, 
         }))
       return
     }
+    const fieldEntries = entries.filter(([key]) => !isAnalysisField(key))
+    if (!fieldEntries.length) {
+      view.type = 'empty'
+      view.message = '接口仅返回统计结果，未展示明细'
+      return
+    }
     view.type = 'fields'
-    view.fields = entries.map(([key, value]) => ({
+    view.fields = fieldEntries.map(([key, value]) => ({
       key,
       label: fieldLabel(key, fields),
       value: buildValue(value, false, fields?.get(key), fields)
@@ -512,7 +539,8 @@ function buildColumns(rows: any[], fields?: Map<string, FieldMeta>,
   if (itemFields?.length) {
     // 数组元素已声明字段：只展示声明的列，顺序与 outputSchema 一致
     itemFields.forEach((field) => {
-      if (!seen.has(field.key) && rows.some((row) => Object.prototype.hasOwnProperty.call(row, field.key))) {
+      if (!isAnalysisField(field.key) && !seen.has(field.key)
+        && rows.some((row) => Object.prototype.hasOwnProperty.call(row, field.key))) {
         seen.add(field.key)
         keys.push(field.key)
       }
@@ -521,14 +549,15 @@ function buildColumns(rows: any[], fields?: Map<string, FieldMeta>,
   }
   // 接口定义的字段优先，保证列顺序与业务字段一致
   fields?.forEach((field) => {
-    if (!seen.has(field.key) && rows.some((row) => Object.prototype.hasOwnProperty.call(row, field.key))) {
+    if (!isAnalysisField(field.key) && !seen.has(field.key)
+      && rows.some((row) => Object.prototype.hasOwnProperty.call(row, field.key))) {
       seen.add(field.key)
       keys.push(field.key)
     }
   })
   rows.forEach((row) => {
     Object.keys(row).forEach((key) => {
-      if (!seen.has(key)) {
+      if (!isAnalysisField(key) && !seen.has(key)) {
         seen.add(key)
         keys.push(key)
       }

@@ -17,6 +17,9 @@ public class AiConfirmRequest {
 
     private String replyId;
 
+    /** 用户选择的模型配置 ID（可选）；保持与发起本轮对话时一致 */
+    private String modelId;
+
     private List<Decision> decisions;
 
     @Data

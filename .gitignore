@@ -8,3 +8,6 @@ nway-system-web/node_modules/.package-lock.json
 nway-system-web/node_modules/
 nway-system-service/nway-system-server/target/
 .idea/
+data/
+logs/
+scripts/mock-business-api/__pycache__/

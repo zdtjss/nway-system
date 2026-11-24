@@ -85,7 +85,9 @@ class GetInterfaceConfigToolTest {
         JSONObject body = invoke("我的待办");
 
         assertThat(body.containsKey("lowConfidence")).isFalse();
-        assertThat(body.getString("next")).contains("调用 invoke_interface");
+        assertThat(body.getString("next"))
+                .contains("query_interface")
+                .contains("invoke_interface");
     }
 
     private JSONObject invoke(String query) {

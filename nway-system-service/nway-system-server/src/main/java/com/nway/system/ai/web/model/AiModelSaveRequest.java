@@ -29,6 +29,29 @@ public class AiModelSaveRequest {
 
     private Boolean supportsToolCalling;
 
+    /** 视觉分析：null 按模型名自动识别，true 支持，false 不支持 */
+    private Boolean supportsVision;
+
+    /** 最大上下文 token；为空按模型名自动识别 */
+    private Integer contextWindowTokens;
+
+    private BigDecimal topP;
+
+    private BigDecimal frequencyPenalty;
+
+    private BigDecimal presencePenalty;
+
+    /** 推理深度：low/medium/high/max 等 */
+    private String reasoningEffort;
+
+    /** 是否思考；为空使用模型默认行为，false 时不发送推理深度与思考预算 */
+    private Boolean thinkingEnabled;
+
+    private Integer thinkingBudget;
+
+    /** 额外请求参数 JSON 对象（厂商专有参数） */
+    private String extraBody;
+
     private Boolean isDefault;
 
     private String status;

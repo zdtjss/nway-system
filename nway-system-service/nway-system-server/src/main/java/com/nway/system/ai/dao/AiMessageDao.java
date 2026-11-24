@@ -32,11 +32,20 @@ public class AiMessageDao {
                 .andOrderByAsc(AiMessage::getId));
     }
 
-    /** 只查询已落库的 AgentScope 消息 id，用于幂等回写判重。 */
-    public List<AiMessage> queryMsgIdsByConversation(String conversationId) {
+    /** 查询已落库消息的 id 与正文，用于幂等回写判重及原地更新。 */
+    public List<AiMessage> queryMsgBlocksByConversation(String conversationId) {
         return sqlExecutor.queryList(SQL.query(AiMessage.class)
                 .withColumn(AiMessage::getMsgId)
+                .withColumn(AiMessage::getBlocksJson)
                 .eq(AiMessage::getConversationId, conversationId));
+    }
+
+    /** 按会话 + 消息 id 更新正文：确认恢复后工具结果才到达，需要回填已落库的 tool_use 块。 */
+    public void updateBlocksJson(String conversationId, String msgId, String blocksJson) {
+        sqlExecutor.update(SQL.update(AiMessage.class)
+                .set(AiMessage::getBlocksJson, blocksJson)
+                .eq(AiMessage::getConversationId, conversationId)
+                .eq(AiMessage::getMsgId, msgId));
     }
 
     public void deleteByConversation(String conversationId) {

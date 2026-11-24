@@ -18,6 +18,7 @@ import io.agentscope.core.event.ToolCallStartEvent;
 import io.agentscope.core.event.ToolResultEndEvent;
 import io.agentscope.core.event.ToolResultStartEvent;
 import io.agentscope.core.event.ToolResultTextDeltaEvent;
+import io.agentscope.core.message.GenerateReason;
 import io.agentscope.core.message.ToolUseBlock;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -69,6 +70,11 @@ public final class AiSseSupport {
                 payload.put("blockId", ((TextBlockStartEvent) event).getBlockId());
             }
             case TEXT_BLOCK_DELTA -> {
+                // query_interface 等 returnDirect 工具的结果已由工具卡片展示，
+                // 框架会把同一份结果再合成一条助手正文，这里丢弃避免重复展示。
+                if (isReturnDirect(event)) {
+                    return null;
+                }
                 payload.put("type", "message.delta");
                 payload.put("blockId", ((TextBlockDeltaEvent) event).getBlockId());
                 payload.put("delta", ((TextBlockDeltaEvent) event).getDelta());
@@ -164,5 +170,12 @@ public final class AiSseSupport {
             list.add(node);
         }
         return list;
+    }
+
+    /** returnDirect 工具合成的最终正文事件；结果已通过工具卡片展示。 */
+    private static boolean isReturnDirect(AgentEvent event) {
+        Map<String, Object> metadata = event.getMetadata();
+        return metadata != null && GenerateReason.TOOL_RETURN_DIRECT.name()
+                .equals(metadata.get(AgentEvent.METADATA_GENERATE_REASON));
     }
 }

@@ -135,6 +135,24 @@
                 </el-tag>
               </template>
             </el-table-column>
+            <el-table-column label="能力" width="210">
+              <template #default="scope">
+                <div class="capability-tags">
+                  <el-tooltip v-if="scope.row.visionSupported"
+                              :content="scope.row.supportsVision == null ? '视觉：按模型名自动识别' : '视觉：手动配置'"
+                              placement="top">
+                    <el-tag size="small" type="success">视觉</el-tag>
+                  </el-tooltip>
+                  <el-tag v-if="scope.row.supportsToolCalling" size="small" type="primary">工具</el-tag>
+                  <el-tag v-if="modelThinkingActive(scope.row)" size="small" type="warning">思考</el-tag>
+                  <el-tag v-if="scope.row.reasoningEffort" size="small" type="info">
+                    {{ scope.row.reasoningEffort }}
+                  </el-tag>
+                  <span v-if="!scope.row.visionSupported && !scope.row.supportsToolCalling
+                               && !modelThinkingActive(scope.row) && !scope.row.reasoningEffort">-</span>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column prop="status" label="状态" width="100" />
             <el-table-column label="操作" width="160" fixed="right">
               <template #default="scope">
@@ -411,8 +429,7 @@
         支持单个对象、数组，或 <code>{"version":"2.0","interfaces":[...]}</code>。
         导入后为草稿状态，需人工审核后发布。
       </div>
-      <el-input v-model="importText" type="textarea" :rows="14" class="code-input"
-                placeholder="粘贴 ai_interface_seed.json 内容" />
+      <el-input v-model="importText" type="textarea" :rows="14" class="code-input" placeholder="粘贴 ai_interface_seed.json 内容" />
       <template #footer>
         <el-button @click="importVisible = false">取消</el-button>
         <el-button type="primary" :loading="importing" @click="doImport">导入</el-button>
@@ -448,42 +465,207 @@
     </el-dialog>
 
     <!-- 模型编辑 -->
-    <el-dialog v-model="modelVisible" :title="modelForm.id ? '编辑模型' : '新增模型'" width="560px"
+    <el-dialog v-model="modelVisible" :title="modelForm.id ? '编辑模型' : '新增模型'" width="720px"
                :close-on-click-modal="false">
-      <el-form label-width="120px" label-position="left">
-        <el-form-item label="配置名" required>
-          <el-input v-model="modelForm.name" placeholder="生产环境 GPT" />
-        </el-form-item>
-        <el-form-item label="Base URL" required>
-          <el-input v-model="modelForm.baseUrl" placeholder="https://api.openai.com/v1" />
-        </el-form-item>
-        <el-form-item label="模型名" required>
-          <el-input v-model="modelForm.modelName" placeholder="gpt-4o-mini" />
-        </el-form-item>
-        <el-form-item label="API Key">
-          <el-input v-model="modelForm.apiKey" type="password" show-password
-                    :placeholder="modelForm.id ? '留空表示不修改' : '必填'" />
-        </el-form-item>
-        <el-form-item label="Temperature">
-          <el-input-number v-model="modelForm.temperature" :min="0" :max="2" :step="0.1"
-                           style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="Max Tokens">
-          <el-input-number v-model="modelForm.maxTokens" :min="256" :max="128000" :step="256"
-                           style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="支持工具调用">
-          <el-switch v-model="modelForm.supportsToolCalling" />
-        </el-form-item>
-        <el-form-item label="设为默认">
-          <el-switch v-model="modelForm.isDefault" />
-        </el-form-item>
-        <el-form-item label="状态">
-          <el-select v-model="modelForm.status" style="width: 100%">
-            <el-option label="ACTIVE" value="ACTIVE" />
-            <el-option label="DISABLED" value="DISABLED" />
-          </el-select>
-        </el-form-item>
+      <el-form label-width="120px" label-position="left" class="model-form">
+        <el-divider content-position="left">基础配置</el-divider>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="配置名" required>
+              <el-input v-model="modelForm.name" placeholder="生产环境 GPT" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="模型名" required>
+              <el-input v-model="modelForm.modelName" placeholder="gpt-4o-mini" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="Base URL" required>
+              <el-input v-model="modelForm.baseUrl" placeholder="https://api.openai.com/v1" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="API Key">
+              <el-input v-model="modelForm.apiKey" type="password" show-password
+                        :placeholder="modelForm.id ? '留空表示不修改' : ''" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="状态">
+              <el-switch v-model="modelForm.status" active-value="ACTIVE" inactive-value="DISABLED"
+                         active-text="激活" inactive-text="停用" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="设为默认">
+              <el-switch v-model="modelForm.isDefault" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">能力与推理</el-divider>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="视觉分析">
+              <el-select v-model="modelForm.visionMode" style="width: 100%">
+                <el-option label="自动识别（按模型名）" value="AUTO" />
+                <el-option label="支持" value="ON" />
+                <el-option label="不支持" value="OFF" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="支持工具调用">
+              <el-switch v-model="modelForm.supportsToolCalling" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="思考模式">
+              <el-select v-model="modelForm.thinkingMode" style="width: 100%">
+                <el-option label="自动（模型默认）" value="AUTO" />
+                <el-option label="开启" value="ON" />
+                <el-option label="关闭" value="OFF" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="推理深度">
+              <el-select v-model="modelForm.reasoningEffort" clearable filterable allow-create
+                         default-first-option placeholder="不指定" style="width: 100%">
+                <el-option label="low（低）" value="low" />
+                <el-option label="medium（中）" value="medium" />
+                <el-option label="high（高）" value="high" />
+                <el-option label="max（最高）" value="max" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="思考预算">
+              <el-input-number v-model="modelForm.thinkingBudget" :min="0" :max="128000" :step="256"
+                               placeholder="不指定" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <div class="form-tip">
+          思考模式关闭时不发送推理深度与思考预算；若模型默认开启思考，可在下方额外参数中按厂商要求关闭
+          （如 {"enable_thinking": false}）。
+        </div>
+
+        <el-divider content-position="left">采样与惩罚</el-divider>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>
+                <span class="label-tip">
+                  Temperature
+                  <el-tooltip placement="top" effect="dark" :show-after="200">
+                    <template #content>
+                      采样温度，范围 0~2。值越高输出越发散、有创造性；越低越稳定、可复现。<br />
+                      建议：精确问答 0~0.3，创意写作 0.7~1.0。
+                    </template>
+                    <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+              <el-input-number v-model="modelForm.temperature" :min="0" :max="2" :step="0.1"
+                               :precision="2" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>
+                <span class="label-tip">
+                  Top P
+                  <el-tooltip placement="top" effect="dark" :show-after="200">
+                    <template #content>
+                      核采样阈值，范围 0~1。仅从累计概率达到该值的最小候选词集合中采样，值越小越保守。<br />
+                      通常与 Temperature 二选一调整，不建议同时大幅修改；留空则使用模型默认值。
+                    </template>
+                    <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+              <el-input-number v-model="modelForm.topP" :min="0" :max="1" :step="0.05"
+                               :precision="2" placeholder="不指定" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>
+                <span class="label-tip">
+                  频率惩罚
+                  <el-tooltip placement="top" effect="dark" :show-after="200">
+                    <template #content>
+                      范围 -2~2。按 token 在已生成内容中出现的次数累加惩罚，降低重复用词的概率，值越大越不容易重复。<br />
+                      留空则不发送该参数，使用模型默认值。
+                    </template>
+                    <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+              <el-input-number v-model="modelForm.frequencyPenalty" :min="-2" :max="2" :step="0.1"
+                               :precision="2" placeholder="不指定" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>
+                <span class="label-tip">
+                  存在惩罚
+                  <el-tooltip placement="top" effect="dark" :show-after="200">
+                    <template #content>
+                      范围 -2~2。token 一旦出现过就施加固定惩罚，鼓励模型引入新词、新话题，值越大越倾向展开新内容。<br />
+                      留空则不发送该参数，使用模型默认值。
+                    </template>
+                    <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+              <el-input-number v-model="modelForm.presencePenalty" :min="-2" :max="2" :step="0.1"
+                               :precision="2" placeholder="不指定" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>
+                <span class="label-tip">
+                  Max Tokens
+                  <el-tooltip placement="top" effect="dark" :show-after="200">
+                    <template #content>
+                      单次生成的最大 token 数（不包含输入）。设置过小可能导致回答被截断，范围 256~128000。
+                    </template>
+                    <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+              <el-input-number v-model="modelForm.maxTokens" :min="256" :max="128000" :step="256"
+                               style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item>
+              <template #label>
+                <span class="label-tip">
+                  最大上下文
+                  <el-tooltip placement="top" effect="dark" :show-after="200">
+                    <template #content>
+                      模型支持的上下文窗口 token 总数（输入 + 输出），用于上下文裁剪与用量估算。<br />
+                      留空则按模型名自动识别。
+                    </template>
+                    <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+              <el-input-number v-model="modelForm.contextWindowTokens" :min="1000" :max="2000000"
+                               :step="1000" placeholder="自动识别" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">额外请求参数（JSON 对象，可空）</el-divider>
+        <el-input v-model="modelForm.extraBody" type="textarea" :rows="4" class="code-input"
+                  placeholder='例如 {"enable_thinking": false} 或 {"thinking": {"type": "disabled"}}' />
       </el-form>
       <template #footer>
         <el-button @click="modelVisible = false">取消</el-button>
@@ -626,6 +808,15 @@ const modelForm = reactive<any>({
   temperature: 0.3,
   maxTokens: 4096,
   supportsToolCalling: true,
+  visionMode: 'AUTO',
+  contextWindowTokens: null,
+  topP: null,
+  frequencyPenalty: null,
+  presencePenalty: null,
+  thinkingMode: 'AUTO',
+  reasoningEffort: '',
+  thinkingBudget: null,
+  extraBody: '',
   isDefault: false,
   status: 'ACTIVE'
 })
@@ -1745,6 +1936,9 @@ function openModelCreate() {
   Object.assign(modelForm, {
     id: '', name: '', baseUrl: '', modelName: '', apiKey: '',
     temperature: 0.3, maxTokens: 4096, supportsToolCalling: true,
+    visionMode: 'AUTO', contextWindowTokens: null, topP: null,
+    frequencyPenalty: null, presencePenalty: null, thinkingMode: 'AUTO',
+    reasoningEffort: '', thinkingBudget: null, extraBody: '',
     isDefault: false, status: 'ACTIVE'
   })
   modelVisible.value = true
@@ -1760,6 +1954,15 @@ function openModelEdit(row: AiModelVo) {
     temperature: row.temperature ?? 0.3,
     maxTokens: row.maxTokens ?? 4096,
     supportsToolCalling: row.supportsToolCalling !== false,
+    visionMode: row.supportsVision == null ? 'AUTO' : row.supportsVision ? 'ON' : 'OFF',
+    contextWindowTokens: row.contextWindowTokens ?? null,
+    topP: row.topP ?? null,
+    frequencyPenalty: row.frequencyPenalty ?? null,
+    presencePenalty: row.presencePenalty ?? null,
+    thinkingMode: row.thinkingEnabled == null ? 'AUTO' : row.thinkingEnabled ? 'ON' : 'OFF',
+    reasoningEffort: row.reasoningEffort || '',
+    thinkingBudget: row.thinkingBudget ?? null,
+    extraBody: row.extraBody || '',
     isDefault: !!row.isDefault,
     status: row.status || 'ACTIVE'
   })
@@ -1771,13 +1974,30 @@ async function saveModelConfig() {
     ElMessage.warning('配置名、Base URL、模型名不能为空')
     return
   }
-  if (!modelForm.id && !modelForm.apiKey) {
-    ElMessage.warning('新增模型必须填写 API Key')
-    return
+  const extraBody = String(modelForm.extraBody || '').trim()
+  if (extraBody) {
+    try {
+      const parsed = JSON.parse(extraBody)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        ElMessage.error('额外请求参数必须是 JSON 对象')
+        return
+      }
+    } catch (e: any) {
+      ElMessage.error(`额外请求参数 JSON 格式错误：${e.message}`)
+      return
+    }
+  }
+  const { visionMode, thinkingMode, ...rest } = modelForm
+  const payload = {
+    ...rest,
+    supportsVision: visionMode === 'AUTO' ? null : visionMode === 'ON',
+    thinkingEnabled: thinkingMode === 'AUTO' ? null : thinkingMode === 'ON',
+    reasoningEffort: modelForm.reasoningEffort || null,
+    extraBody: extraBody || null
   }
   modelSaving.value = true
   try {
-    await saveModel({ ...modelForm })
+    await saveModel(payload)
     ElMessage.success('已保存')
     modelVisible.value = false
     await loadModels()
@@ -1794,6 +2014,12 @@ async function removeModel(row: AiModelVo) {
   } catch (e) {
     // 取消
   }
+}
+
+/** 思考是否生效：显式开启，或未配置时由推理深度/思考预算推断。 */
+function modelThinkingActive(row: AiModelVo) {
+  return row.thinkingEnabled === true
+    || (row.thinkingEnabled == null && (!!row.reasoningEffort || row.thinkingBudget != null))
 }
 
 // ==================== 展示 ====================
@@ -1922,6 +2148,13 @@ function statusTag(status?: string) {
   color: #409eff;
 }
 
+.label-tip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
 .dialog-title {
   font-size: 16px;
   font-weight: 600;
@@ -2045,5 +2278,29 @@ function statusTag(status?: string) {
   color: #606266;
   font-size: 12px;
   word-break: break-all;
+}
+
+.capability-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.form-tip {
+  margin: -4px 0 12px 120px;
+  color: #8f959e;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.model-form :deep(.el-divider) {
+  margin: 6px 0 16px;
+}
+
+.model-form :deep(.el-divider__text) {
+  font-size: 13px;
+  font-weight: 600;
+  color: #606266;
 }
 </style>

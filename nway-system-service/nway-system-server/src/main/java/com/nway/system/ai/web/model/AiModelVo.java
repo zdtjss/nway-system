@@ -27,6 +27,28 @@ public class AiModelVo {
 
     private Boolean supportsToolCalling;
 
+    /** 视觉分析配置：null 自动识别，true 支持，false 不支持 */
+    private Boolean supportsVision;
+
+    /** 视觉分析最终生效结果（配置为空时按模型名自动识别） */
+    private Boolean visionSupported;
+
+    private Integer contextWindowTokens;
+
+    private BigDecimal topP;
+
+    private BigDecimal frequencyPenalty;
+
+    private BigDecimal presencePenalty;
+
+    private String reasoningEffort;
+
+    private Boolean thinkingEnabled;
+
+    private Integer thinkingBudget;
+
+    private String extraBody;
+
     private Boolean isDefault;
 
     private String status;

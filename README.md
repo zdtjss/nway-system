@@ -299,7 +299,7 @@ Token 滑动续期、登出、切换工作租户都由宿主统一广播，子�
 
 传统做法是给每个 API 写一个 Function Calling 工具，接口一多就不可维护。nway-system 的选择是：
 
-> **把业务接口抽象为可配置的元数据，Agent 永远只有两个核心工具。**
+> **把业务接口抽象为可配置的元数据，Agent 核心工具保持精简。**
 
 ```json
 {
@@ -328,12 +328,15 @@ Token 滑动续期、登出、切换工作租户都由宿主统一广播，子�
 
 接入一个新业务能力，通常只需要在管理端配置一条接口元数据并发布，**不需要改代码、不需要重新部署 Agent**。
 
-#### 两个核心工具
+#### 核心工具
 
 | 工具 | 职责 |
 | --- | --- |
 | `get_interface_config` | 按用户原话检索已发布接口，返回 `inputSchema`、必填项、候选值与置信度 |
-| `invoke_interface` | 校验参数、鉴权、以**当前用户身份**调用目标业务接口，返回结构化结果 |
+| `query_interface` | 只读查询直返：调用结果直接作为本轮答复展示给用户，跳过模型转述 |
+| `invoke_interface` | 通用调用：结果返回模型继续处理，用于分析、多次调用与写操作（写操作需用户确认） |
+
+`query_interface` 与 `invoke_interface` 由模型按用户意图选择：单纯查看数据走直返；用户要求分析、对比、总结，或需要基于结果继续调用接口时走通用调用。接口返回的数据保持原样，默认不触发模型的统计分析；只有用户明确要求分析时才由模型处理。
 
 按需还可启用两个可选工具：
 
@@ -359,10 +362,11 @@ Token 滑动续期、登出、切换工作租户都由宿主统一广播，子�
             ├─ get_interface_config：两级检索 + 权限过滤
             ├─ 参数校验：inputSchema、必填项、枚举候选、附件归属
             ├─ 写操作 → HITL（Human-in-the-loop）确认表单 → 用户确认 → 后端重新校验后执行
-            ├─ invoke_interface：透传用户 JWT 调用业务系统
+            ├─ query_interface / invoke_interface：透传用户 JWT 调用业务系统
+            ├─ 直返查询：结果直接作为本轮答复返回，跳过模型转述
             ├─ outputSchema 约束：只允许引用已定义字段
             └─ 审计留痕（sys_audit_log）
-  └─ Markdown + nway-view 结构化渲染
+  └─ 接口结果卡片 / Markdown + nway-view 结构化渲染
 ```
 
 #### 安全边界
@@ -423,7 +427,7 @@ flowchart TB
 
     S --> A["办公智能体运行时<br/>AgentScope HarnessAgent"]
     A --> LLM[OpenAI 兼容模型]
-    A --> T["get_interface_config<br/>invoke_interface"]
+    A --> T["get_interface_config<br/>query_interface<br/>invoke_interface"]
     T --> EXT
     S --> FILE[文件存储]
 ```
@@ -502,31 +506,43 @@ CREATE DATABASE nway_system
   COLLATE utf8mb4_general_ci;
 ```
 
-按文件名顺序执行 `nway-system-service/db/` 下的脚本：
+按文件名顺序执行 `nway-system-service/db/` 下的场景脚本（详细覆盖范围与依赖见 [db/README.md](nway-system-service/db/README.md)）：
 
-| 脚本范围 | 内容 | 是否必需 |
-| --- | --- | --- |
-| `01` ~ `09` | 用户 / 角色 / 菜单、部门 / 岗位、消息、字典、开放平台、审计 / 租户、管理员授权、资源授权、文件 | 必需 |
-| `10` | 视图 | 必需 |
-| `11` ~ `12` | 租户 / 应用 / 角色 / 管理员 / 核心菜单 / 授权初始化 | 必需 |
-| `20` ~ `21` | 集团组织架构、岗位职级等演示数据 | 可选 |
-| `22` ~ `23` | OA 租户与 BPM 流程菜单（配套 OA 系统） | 可选 |
-| `24` ~ `30` | 办公智能体表、菜单、应用字典、接口访问模式、菜单信息架构 | 使用 AI 时必需 |
+| 脚本 | 业务场景 | 内容 | 是否必需 |
+| --- | --- | --- | --- |
+| `01_platform_tenant_app.sql` | 平台基座 | 租户、应用；default/public 租户与系统管理应用 | 必需 |
+| `02_permission_authz.sql` | 权限与导航 | 角色、用户角色、菜单、收藏、管理员授权、资源、统一授权、视图；管理员角色与平台导航基线 | 必需 |
+| `03_organization.sql` | 组织架构 | 部门、跨部门任职、岗位、用户岗位 | 必需 |
+| `04_identity_user.sql` | 用户身份 | 用户、登录校验；默认管理员账号 | 必需 |
+| `05_dict_config.sql` | 字典与配置 | 字典类别 / 字典项、系统配置 | 必需 |
+| `06_message_center.sql` | 消息中心 | 消息主表 / 目标 / 接收人 / 发送日志 | 必需 |
+| `07_file_center.sql` | 文件中心 | 文件元数据 | 使用文件能力时必需 |
+| `08_open_platform.sql` | 开放平台 | 开放应用 / Webhook / 调用日志 | 使用开放平台时必需 |
+| `09_audit_log.sql` | 审计日志 | 审计日志表 | 必需（审计能力） |
+| `10_oa_bpm_integration.sql` | OA / BPM 集成 | OA 租户与 BPM 流程菜单 | 可选 |
+| `11_ai_office_agent.sql` | 办公智能体 | AI 接口 / 模型 / 提示词 / 会话 / 消息、授权分组、菜单、应用字典 | 使用 AI 时必需 |
 
-Bash 环境可一次执行核心脚本：
+Bash 环境可一次执行全部必需脚本：
 
 ```bash
 cd nway-system-service
-for f in db/0*.sql db/10_views.sql db/11_core_init_data.sql db/12_admin_menu.sql; do
+for f in db/[0-9][0-9]_*.sql; do
   mysql -h 127.0.0.1 -u root -p nway_system < "$f"
 done
+```
+
+可选演示数据（集团组织架构、岗位职级字典）在必需脚本之后执行：
+
+```bash
+mysql -h 127.0.0.1 -u root -p nway_system < db/demo/01_organization_demo.sql
+mysql -h 127.0.0.1 -u root -p nway_system < db/demo/02_dict_demo.sql
 ```
 
 > **注意**
 > - `system.sql` 是早期基线脚本，字段已过时，**不要用于新环境初始化**。
 > - 初始化会创建默认账号 `admin`，初始密码 `1`，首次登录后请立即修改。
-> - 使用 AI 能力时，继续执行 `db/24` ~ `db/30`。
-> - Windows 用户请在 MySQL 客户端中按文件顺序依次执行，或使用等价的批处理脚本。
+> - 所有场景脚本按「先 DDL、后 DML」组织，依赖顺序为 `01 → 02 → 03 → 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11`。
+> - Windows 用户可使用 `cmd /c "mysql ... < 脚本路径"` 按文件名顺序执行，或在 MySQL 客户端中依次执行。
 
 ### 3. 启动后端
 

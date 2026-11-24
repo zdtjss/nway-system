@@ -19,7 +19,9 @@
             </div>
           </div>
         </div>
-        <div class="chat-header-note">AI 生成内容仅供参考</div>
+        <div class="chat-header-right">
+          <div class="chat-header-note">AI 生成内容仅供参考</div>
+        </div>
       </header>
 
       <div ref="scrollEl" class="message-scroll" @scroll="trackFollowScroll">
@@ -93,6 +95,12 @@
 
                   <pre v-else-if="tool.result" class="tool-result"
                        @scroll="trackFollowScroll">{{ toolResultText(tool.result) }}</pre>
+
+                  <div v-else class="tool-message">
+                    {{ tool.status === 'interrupted'
+                      ? '本次调用未完成（等待确认或会话已中断），暂无返回结果。'
+                      : '调用已完成，暂无返回数据。' }}
+                  </div>
                 </div>
               </div>
 
@@ -270,7 +278,49 @@
               <el-icon><Microphone /></el-icon>
             </button>
             <span class="input-actions-gap"></span>
-            <button v-if="!streaming" class="send-btn" :disabled="!canSend" @click="send">
+            <el-select v-if="chatModels.length" v-model="selectedModelId" class="model-select"
+                       size="small" placeholder="默认模型" :disabled="streaming">
+              <template #label="{ value }">
+                <span class="model-selected">
+                  <el-icon v-if="modelById(value)?.supportsVision" class="model-flag vision"
+                           title="支持图片视觉分析">
+                    <View />
+                  </el-icon>
+                  <el-icon v-else-if="modelById(value)" class="model-flag muted"
+                           title="不支持图片视觉分析">
+                    <Hide />
+                  </el-icon>
+                  <span class="model-selected-name">{{ modelById(value)?.name || '默认模型' }}</span>
+                  <span v-if="modelById(value)?.reasoningEffort" class="model-effort"
+                        :title="`推理深度：${reasoningLabel(modelById(value)?.reasoningEffort)}`">
+                    {{ reasoningLabel(modelById(value)?.reasoningEffort) }}
+                  </span>
+                </span>
+              </template>
+              <el-option v-for="model in chatModels" :key="model.id" :label="model.name"
+                         :value="model.id">
+                <div class="model-option">
+                  <span class="model-option-name">{{ model.name }}</span>
+                  <span class="model-flags">
+                    <el-icon v-if="model.supportsVision" class="model-flag vision"
+                             title="支持图片视觉分析">
+                      <View />
+                    </el-icon>
+                    <el-icon v-else class="model-flag muted" title="不支持图片视觉分析">
+                      <Hide />
+                    </el-icon>
+                    <el-icon v-if="model.thinkingEnabled" class="model-flag think" title="已开启思考">
+                      <Cpu />
+                    </el-icon>
+                    <span v-if="model.reasoningEffort" class="model-effort"
+                          :title="`推理深度：${reasoningLabel(model.reasoningEffort)}`">
+                      {{ reasoningLabel(model.reasoningEffort) }}
+                    </span>
+                  </span>
+                </div>
+              </el-option>
+            </el-select>
+            <button v-if="!streaming" class="send-btn" title="发送" :disabled="!canSend" @click="send">
               <el-icon><Promotion /></el-icon>
             </button>
             <button v-else class="send-btn stop" title="停止生成" @click="stop">
@@ -413,14 +463,16 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  ArrowRight, ChatDotRound, Clock, Close, Delete, Document, Edit, EditPen, Headset, MagicStick,
-  Microphone, MoreFilled, Mute, Paperclip, Plus, Promotion, Search, Star, StarFilled, VideoPause
+  ArrowRight, ChatDotRound, Clock, Close, Cpu, Delete, Document, Edit, EditPen, Headset, Hide,
+  MagicStick, Microphone, MoreFilled, Mute, Paperclip, Plus, Promotion, Search, Star, StarFilled,
+  VideoPause, View
 } from '@element-plus/icons-vue'
 import {
   assetUrl, deleteChatFile, deleteConversation, deletePrompt,
-  extractPrompt, getMessages, listConversations, listPrompts, renameConversation,
+  extractPrompt, getMessages, listChatModels, listConversations, listPrompts, renameConversation,
   savePrompt, streamChat, streamConfirm, updatePrompt, uploadChatFile,
-  type AiConversationVo, type AiFieldDef, type AiFileVo, type AiMessage, type AiPromptVo, type ChatEvent
+  type AiChatModelVo, type AiConversationVo, type AiFieldDef, type AiFileVo, type AiMessage,
+  type AiPromptVo, type ChatEvent
 } from '@/api/ai'
 import AiViewBlock from '@/components/ai/AiViewBlock.vue'
 import AiMarkdown from '@/components/ai/AiMarkdown.vue'
@@ -441,7 +493,7 @@ interface UploadItem extends AiFileVo {
 interface UiTool {
   id: string
   name: string
-  status: 'running' | 'done' | 'error' | 'denied'
+  status: 'running' | 'done' | 'error' | 'denied' | 'interrupted'
   result?: string
   /** 调用结果解析成功时的结构化视图，未解析时回退展示原文 */
   view?: AiView | null
@@ -480,6 +532,8 @@ interface ConfirmForm {
 
 const QUICK_PROMPT_KEY = 'nway-ai-quick-prompt-ids'
 const QUICK_PROMPT_LIMIT = 8
+/** 用户选择的对话模型，按人记忆，切换页面后保持 */
+const MODEL_KEY = 'nway-ai-chat-model-id'
 
 function readQuickPromptIds(): string[] {
   try {
@@ -496,6 +550,55 @@ function readQuickPromptIds(): string[] {
 
 /** 快捷提示词只记录提示词 ID，内容始终取自提示词列表，最多 8 条。 */
 const quickPromptIds = ref<string[]>(readQuickPromptIds())
+
+const chatModels = ref<AiChatModelVo[]>([])
+const selectedModelId = ref(readSelectedModelId())
+
+function readSelectedModelId(): string {
+  try {
+    return localStorage.getItem(MODEL_KEY) || ''
+  } catch (e) {
+    return ''
+  }
+}
+
+function persistSelectedModel() {
+  try {
+    if (selectedModelId.value) {
+      localStorage.setItem(MODEL_KEY, selectedModelId.value)
+    } else {
+      localStorage.removeItem(MODEL_KEY)
+    }
+  } catch (e) {
+    // 本地存储不可用时仅在当前会话生效
+  }
+}
+
+/** 可选模型由后端按租户过滤；本地选中的模型失效时回退到默认模型。 */
+async function loadChatModels() {
+  try {
+    const res = await listChatModels()
+    chatModels.value = res.data || []
+    if (!chatModels.value.some((model) => model.id === selectedModelId.value)) {
+      const fallback = chatModels.value.find((model) => model.isDefault) || chatModels.value[0]
+      selectedModelId.value = fallback?.id || ''
+    }
+  } catch (e) {
+    // 模型列表不可用时隐藏选择器，后端按默认模型处理
+    chatModels.value = []
+  }
+}
+
+function modelById(id?: string) {
+  return chatModels.value.find((model) => model.id === id)
+}
+
+/** 推理深度展示：常见档位中文化，自定义档位原样展示。 */
+function reasoningLabel(level?: string) {
+  if (!level) return ''
+  const labels: Record<string, string> = { low: '低', medium: '中', high: '高', max: '最高' }
+  return labels[level] || level
+}
 
 const conversations = ref<AiConversationVo[]>([])
 const activeId = ref<string | null>(null)
@@ -546,6 +649,7 @@ let historySearchTimer: ReturnType<typeof setTimeout> | null = null
 let historyLoadSeq = 0
 
 onMounted(() => {
+  loadChatModels()
   loadHistory()
   loadPrompts()
   applyHandoff()
@@ -553,6 +657,9 @@ onMounted(() => {
 
 /** 页面已打开（keep-alive 缓存）时由面板交接触发，直接接管内容 */
 watch(() => aiChatHandoff.payload, applyHandoff)
+
+/** 记住用户选择的模型，下次进入页面继续使用 */
+watch(selectedModelId, persistSelectedModel)
 
 /** 输入关键字自动搜索，防抖避免每次按键都请求。 */
 watch(historyKeyword, () => {
@@ -642,11 +749,17 @@ function toHandoffMessage(raw: any): UiMessage {
     tools: (raw.tools || []).map((tool: any): UiTool => ({
       id: tool.id || uid(),
       name: tool.name || INVOKE_TOOL,
-      status: tool.status === 'running' || tool.status === 'error' || tool.status === 'denied'
+      status: tool.status === 'error' || tool.status === 'denied'
         ? tool.status
-        : 'done',
+        // 面板交接前已停止流式，执行中的调用不会再有结果事件
+        : tool.status === 'interrupted' || tool.status === 'running'
+          ? 'interrupted'
+          : 'done',
       result: tool.result,
-      view: tool.view || null
+      // 无结果时保留面板的兜底说明，避免同一条消息在两处显示不同文案；有结果则按接口元数据重新渲染
+      view: tool.result && isResultTool(tool.name || INVOKE_TOOL)
+        ? buildInvokeView(tool.result)
+        : tool.result ? null : tool.view || null
     })),
     // 按已结束状态重新分段，避免把面板流式中的占位段带过来
     segments: splitViewSegments(raw.text || '', false),
@@ -669,7 +782,9 @@ async function openConversation(conv: AiConversationVo) {
   messages.value = []
   try {
     const res = await getMessages(conv.id)
-    messages.value = (res.data || []).map(toUiMessage)
+    const list = (res.data || []).map(toUiMessage)
+    restoreHistoryTools(list)
+    messages.value = list
     scrollToBottom(true)
   } catch (e) {
     // 已提示
@@ -704,15 +819,46 @@ function toUiMessage(message: AiMessage): UiMessage {
       ui.tools.push({
         id: block.id || uid(),
         name: toolName,
-        status: block.state === 'ERROR' ? 'error' : block.result ? 'done' : 'running',
+        // 只有工具调用、没有结果与状态：通常是等待确认后中断，标记为未完成
+        status: block.state === 'ERROR' || block.state === 'DENIED'
+          ? 'error'
+          : block.result || block.state ? 'done' : 'interrupted',
         result: block.result,
-        view: toolName === INVOKE_TOOL ? buildInvokeView(block.result) : null
+        view: isResultTool(toolName) ? buildInvokeView(block.result) : null
       })
     }
   })
   ui.text = texts.join('\n')
   syncSegments(ui)
   return ui
+}
+
+/**
+ * 确认执行的写操作，工具结果可能没回填到历史消息里（只有 tool_use 没有 result）。
+ * 该轮之后还有助手正文，说明这次调用已经执行完成，不能因为缺少结果就显示未完成。
+ */
+function restoreHistoryTools(list: UiMessage[]) {
+  list.forEach((message, index) => {
+    if (!message.tools.some((tool) => tool.status === 'interrupted')) return
+    let completed = false
+    for (let i = index + 1; i < list.length; i += 1) {
+      const next = list[i]
+      if (next.role === 'user') break
+      if (next.text.trim()) {
+        completed = true
+        break
+      }
+    }
+    if (!completed) return
+    message.tools.forEach((tool) => {
+      if (tool.status !== 'interrupted') return
+      tool.status = 'done'
+      // 结果没有随历史落库：说明调用已完成但历史里不含返回数据，与简易面板保持同一文案
+      if (!tool.result) {
+        tool.view = { type: 'empty', text: '调用已完成，历史记录中未保留返回数据。' }
+      }
+    })
+  })
 }
 
 /** 正文变化后重新分段：已闭合的视图块渲染，流式期间的未闭合块显示占位。 */
@@ -828,7 +974,8 @@ async function send() {
     (onEvent, signal) => streamChat({
       conversationId: activeId.value,
       message: text,
-      fileIds: files.map((f) => f.fileId)
+      fileIds: files.map((f) => f.fileId),
+      modelId: selectedModelId.value || undefined
     }, onEvent, signal),
     assistant
   )
@@ -863,6 +1010,19 @@ async function runStream(
   }
 }
 
+/**
+ * 按 toolCallId 在所有消息中查找工具卡片。
+ * 写操作确认后，工具结果在 /ai/chat/confirm 的新流里返回，而工具卡片仍停留在上一条消息上。
+ */
+function findTool(toolCallId?: string) {
+  if (!toolCallId) return undefined
+  for (const message of messages.value) {
+    const tool = message.tools.find((item) => item.id === toolCallId)
+    if (tool) return tool
+  }
+  return undefined
+}
+
 function handleEvent(event: ChatEvent, target: UiMessage) {
   switch (event.type) {
     case 'conversation':
@@ -883,8 +1043,7 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
       break
     case 'tool.call.start': {
       if (event.name === CONFIG_TOOL) break
-      const existing = target.tools.find((t) => t.id === event.toolCallId)
-      if (!existing) {
+      if (!findTool(event.toolCallId)) {
         target.tools.push({ id: event.toolCallId || uid(), name: event.name, status: 'running' })
       }
       break
@@ -895,7 +1054,7 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
         pendingConfigResults.set(key, (pendingConfigResults.get(key) || '') + (event.delta || ''))
         break
       }
-      const tool = target.tools.find((t) => t.id === event.toolCallId)
+      const tool = findTool(event.toolCallId)
       if (tool) tool.result = (tool.result || '') + (event.delta || '')
       followStreamTail('.tool-result')
       break
@@ -910,16 +1069,16 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
         followStreamTail('.thinking-text')
         break
       }
-      const tool = target.tools.find((t) => t.id === event.toolCallId)
+      const tool = findTool(event.toolCallId)
       if (tool) {
         tool.status = event.state === 'ERROR' || event.state === 'DENIED' ? 'error' : 'done'
-        if (tool.name === INVOKE_TOOL) tool.view = buildInvokeView(tool.result)
+        if (isResultTool(tool.name)) tool.view = buildInvokeView(tool.result)
       }
       break
     }
     case 'tool.denied':
       (event.toolCalls || []).forEach((call: any) => {
-        const tool = target.tools.find((t) => t.id === call.id)
+        const tool = findTool(call.id)
         if (tool) tool.status = 'denied'
       })
       break
@@ -946,6 +1105,12 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
 function stop() {
   abortController?.abort()
   streaming.value = false
+  // 停止后不再收到工具结果事件，把执行中的调用标记为未完成
+  messages.value.forEach((message) => {
+    message.tools?.forEach((tool) => {
+      if (tool.status === 'running') tool.status = 'interrupted'
+    })
+  })
 }
 
 // ==================== 语音输入与播报 ====================
@@ -1318,7 +1483,8 @@ async function submitConfirm(confirmed: boolean) {
     (onEvent, signal) => streamConfirm({
       conversationId: activeId.value as string,
       replyId,
-      decisions
+      decisions,
+      modelId: selectedModelId.value || undefined
     }, onEvent, signal),
     assistant
   )
@@ -1805,8 +1971,10 @@ function toggleThinking(id: string) {
   thinkingOpen.value = new Set(thinkingOpen.value)
 }
 
-/** 工具卡片无结果或视图时不响应收起，避免点击无反馈。 */
+/** 工具卡片有结果或需要兜底说明时可展开；仅执行中且无内容时不响应收起。 */
 function hasToolBody(tool: UiTool) {
+  // 未完成与已结束但无结果时也展示兜底文案，避免展开后一片空白
+  if (tool.status === 'interrupted' || tool.status === 'done') return true
   return !!(tool.view || tool.result)
 }
 
@@ -1818,14 +1986,20 @@ function toggleTool(id: string) {
 
 function toolLabel(name?: string) {
   if (name === CONFIG_TOOL) return '查询接口配置'
+  if (name === QUERY_TOOL) return '查询结果'
   if (name === INVOKE_TOOL) return '调用业务接口'
   return name || '工具调用'
+}
+
+function isResultTool(name?: string) {
+  return name === INVOKE_TOOL || name === QUERY_TOOL
 }
 
 function toolStatusLabel(tool: UiTool) {
   if (tool.status === 'running') return '执行中'
   if (tool.status === 'error') return '失败'
   if (tool.status === 'denied') return '已拒绝'
+  if (tool.status === 'interrupted') return '未完成'
   return '完成'
 }
 
@@ -1840,6 +2014,7 @@ function formatSize(size?: number) {
 
 const CONFIG_TOOL = 'get_interface_config'
 const INVOKE_TOOL = 'invoke_interface'
+const QUERY_TOOL = 'query_interface'
 
 /** get_interface_config 的流式结果先暂存，结束后整体解析为思考内容。 */
 const pendingConfigResults = new Map<string, string>()
@@ -2097,6 +2272,13 @@ function followStreamTail(selector: string) {
   color: #98a1b3;
   font-size: 11.5px;
   white-space: nowrap;
+}
+
+.chat-header-right {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .message-scroll {
@@ -2578,6 +2760,11 @@ function followStreamTail(selector: string) {
   background: #fffafa;
 }
 
+.tool-card.interrupted {
+  border-color: #ffe2c2;
+  background: #fffaf3;
+}
+
 .tool-head {
   display: flex;
   align-items: center;
@@ -2632,6 +2819,11 @@ function followStreamTail(selector: string) {
 .tool-dot.denied {
   background: #f53f3f;
   box-shadow: 0 0 0 3px rgba(245, 63, 63, 0.14);
+}
+
+.tool-dot.interrupted {
+  background: #ff7d00;
+  box-shadow: 0 0 0 3px rgba(255, 125, 0, 0.14);
 }
 
 @keyframes pulse {
@@ -2855,6 +3047,97 @@ function followStreamTail(selector: string) {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* 模型选择与发送按钮同排，采用无边框样式融入输入区 */
+.model-select {
+  width: 190px;
+  margin-right: 2px;
+}
+
+.model-select :deep(.el-select__wrapper) {
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+  font-size: 13px;
+  color: #5f6b80;
+}
+
+.model-select :deep(.el-select__wrapper:hover),
+.model-select :deep(.el-select__wrapper.is-focused) {
+  background: rgba(79, 124, 255, 0.09);
+  box-shadow: none;
+}
+
+.model-select :deep(.el-select__wrapper.is-disabled) {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* 模型能力标识：视觉、思考与推理深度 */
+.model-selected {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.model-selected-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.model-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-flags {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.model-flag {
+  font-size: 13px;
+}
+
+.model-flag.vision {
+  color: #5b8cff;
+}
+
+.model-flag.think {
+  color: #f0a020;
+}
+
+.model-flag.muted {
+  color: #c9cdd4;
+}
+
+.model-effort {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #f2f4f8;
+  color: #6b7488;
+  font-size: 10.5px;
+  line-height: 16px;
 }
 
 .tool-btn {
@@ -3509,6 +3792,10 @@ function followStreamTail(selector: string) {
   .composer-toolbar {
     flex-wrap: wrap;
     justify-content: flex-start;
+  }
+
+  .model-select {
+    width: 130px;
   }
 }
 </style>

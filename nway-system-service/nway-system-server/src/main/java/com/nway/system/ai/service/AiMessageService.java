@@ -9,10 +9,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * 会话消息持久化：消息正文以 ai_message 表为权威存储。
@@ -40,19 +39,30 @@ public class AiMessageService {
     }
 
     /**
-     * 幂等保存：只插入库中尚不存在的消息，重复调用不会产生重复记录。
+     * 幂等回写：库中不存在的消息插入，正文发生变化的已有消息原地更新。
+     * <p>
+     * 写操作确认后，工具结果在下一轮流式（/ai/chat/confirm）结束后才出现在会话里，
+     * 此时 tool_use 消息已落库；只插入不更新会让历史记录中的工具块永久缺少结果。
      */
     @Transactional(rollbackFor = Exception.class)
-    public void saveIfAbsent(String conversationId, String userId, List<AiMessageVo> messages) {
+    public void save(String conversationId, String userId, List<AiMessageVo> messages) {
         if (messages == null || messages.isEmpty()) {
             return;
         }
-        Set<String> existing = new HashSet<>();
-        for (AiMessage item : messageDao.queryMsgIdsByConversation(conversationId)) {
-            existing.add(item.getMsgId());
+        Map<String, String> existing = new HashMap<>();
+        for (AiMessage item : messageDao.queryMsgBlocksByConversation(conversationId)) {
+            existing.put(item.getMsgId(), item.getBlocksJson());
         }
         for (AiMessageVo vo : messages) {
-            if (StringUtils.isBlank(vo.getId()) || !existing.add(vo.getId())) {
+            if (StringUtils.isBlank(vo.getId())) {
+                continue;
+            }
+            String blocksJson = JSON.toJSONString(vo.getBlocks() == null ? List.of() : vo.getBlocks());
+            if (existing.containsKey(vo.getId())) {
+                if (!blocksJson.equals(existing.get(vo.getId()))) {
+                    messageDao.updateBlocksJson(conversationId, vo.getId(), blocksJson);
+                    existing.put(vo.getId(), blocksJson);
+                }
                 continue;
             }
             AiMessage entity = new AiMessage();
@@ -61,9 +71,10 @@ public class AiMessageService {
             entity.setConversationId(conversationId);
             entity.setUserId(userId);
             entity.setRole(vo.getRole());
-            entity.setBlocksJson(JSON.toJSONString(vo.getBlocks() == null ? List.of() : vo.getBlocks()));
+            entity.setBlocksJson(blocksJson);
             entity.setMessageTime(vo.getTimestamp());
             messageDao.insert(entity);
+            existing.put(vo.getId(), blocksJson);
         }
     }
 

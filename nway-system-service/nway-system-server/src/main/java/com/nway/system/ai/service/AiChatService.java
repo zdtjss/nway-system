@@ -5,11 +5,13 @@ import com.nway.system.ai.web.model.AiConfirmRequest;
 import com.nway.system.ai.web.model.AiConversationVo;
 import com.nway.system.ai.web.model.AiFileVo;
 import com.nway.system.ai.web.model.AiMessageVo;
+import com.alibaba.fastjson2.JSON;
 import com.nway.system.ai.domain.AiPageContext;
 import com.nway.system.ai.domain.AiUserContext;
 import com.nway.system.common.exception.NwaySystemException;
 import com.nway.system.common.tenant.TenantUtil;
 import com.nway.system.ai.entity.AiConversation;
+import com.nway.system.ai.tool.QueryInterfaceTool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEndEvent;
 import io.agentscope.core.event.AgentEvent;
@@ -26,12 +28,15 @@ import io.agentscope.core.event.ToolResultEndEvent;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.message.MessageMetadataKeys;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ThinkingBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ChatUsage;
+import io.agentscope.core.session.SessionProjection;
 import io.agentscope.core.session.SessionViews;
+import io.agentscope.core.state.AgentState;
 import io.agentscope.harness.agent.HarnessAgent;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -114,7 +119,7 @@ public class AiChatService {
             // 新会话进入历史记录时用模型生成的主题作为标题，与首轮回答并行执行
             conversationService.generateTitle(conversation.getId(), user, request.getMessage());
         }
-        HarnessAgent agent = agent(user);
+        HarnessAgent agent = agent(user, request.getModelId());
         RuntimeContext context = runtimeContext(user, conversation);
 
         List<ContentBlock> blocks = new ArrayList<>();
@@ -211,7 +216,7 @@ public class AiChatService {
                 conversation.getId(), user.getEmployeeId(), results.size(), confirmed,
                 results.size() - confirmed);
 
-        HarnessAgent agent = agent(user);
+        HarnessAgent agent = agent(user, request.getModelId());
         Flux<AgentEvent> events = instrument(agent.streamEvents(msg, runtimeContext(user, conversation)),
                 user, conversation, "confirm");
         return new ChatStream(conversation, events);
@@ -316,7 +321,7 @@ public class AiChatService {
         if (messages.isEmpty()) {
             messages = transcript(user, conversation);
             if (!messages.isEmpty()) {
-                messageService.saveIfAbsent(conversationId, user.getEmployeeId(), messages);
+                messageService.save(conversationId, user.getEmployeeId(), messages);
             }
         }
         for (AiMessageVo message : messages) {
@@ -406,7 +411,7 @@ public class AiChatService {
         Runnable action = () -> {
             try {
                 List<AiMessageVo> messages = transcript(user, conversation);
-                messageService.saveIfAbsent(conversation.getId(), user.getEmployeeId(), messages);
+                messageService.save(conversation.getId(), user.getEmployeeId(), messages);
             } catch (Exception e) {
                 log.warn("会话消息落库失败 conversationId={} error={}", conversation.getId(), e.getMessage());
             }
@@ -432,13 +437,23 @@ public class AiChatService {
         if (transcript == null || transcript.messages() == null) {
             return List.of();
         }
+        List<SessionMessage> messages = mergeDuplicateIdMessages(user, conversation, transcript.messages());
         List<AiMessageVo> result = new ArrayList<>();
         Map<String, Map<String, Object>> toolBlocks = new HashMap<>();
-        for (Msg msg : transcript.messages()) {
+        // 直返查询的工具块：框架上下文里只保留占位结果，真实结果在后一条助手消息中，需要回填
+        List<Map<String, Object>> directTools = new ArrayList<>();
+        for (SessionMessage entry : messages) {
+            Msg msg = entry.message();
             if (msg.getRole() == MsgRole.SYSTEM) {
                 continue;
             }
             if (msg.getMetadata() != null && msg.getMetadata().containsKey(Msg.METADATA_CONFIRM_RESULTS)) {
+                continue;
+            }
+            // returnDirect 工具会把接口结果合成一条助手正文；把真实结果回填到工具块，历史里不再展示原始报文
+            if (msg.getMetadata() != null
+                    && Boolean.TRUE.equals(msg.getMetadata().get(MessageMetadataKeys.TOOL_RETURN_DIRECT))) {
+                applyReturnDirectResults(msg, directTools);
                 continue;
             }
             if (msg.getRole() == MsgRole.USER && "确认结果".equals(msg.getTextContent())) {
@@ -447,6 +462,12 @@ public class AiChatService {
             if (msg.getRole() == MsgRole.TOOL) {
                 appendToolResults(msg, toolBlocks);
                 continue;
+            }
+            boolean hasToolUse = msg.getContent() != null
+                    && msg.getContent().stream().anyMatch(ToolUseBlock.class::isInstance);
+            if (hasToolUse || msg.getRole() == MsgRole.USER) {
+                // 进入新的工具批次/用户轮次，上一批直返结果已经回填完毕
+                directTools.clear();
             }
             List<Map<String, Object>> blocks = new ArrayList<>();
             if (msg.getContent() != null) {
@@ -468,20 +489,128 @@ public class AiChatService {
                         node.put("input", toolUse.getInput());
                         blocks.add(node);
                         toolBlocks.put(toolUse.getId(), node);
+                        if (QueryInterfaceTool.NAME.equals(toolUse.getName())) {
+                            directTools.add(node);
+                        }
                     }
                 }
+            }
+            // 普通助手正文（非直返收尾）说明本批工具结果已直接写回上下文，不需要再回填
+            if (msg.getRole() == MsgRole.ASSISTANT && !hasToolUse) {
+                directTools.clear();
             }
             if (blocks.isEmpty()) {
                 continue;
             }
             AiMessageVo vo = new AiMessageVo();
-            vo.setId(msg.getId());
+            vo.setId(entry.id());
             vo.setRole(msg.getRole() == MsgRole.USER ? "user" : "assistant");
             vo.setTimestamp(msg.getTimestamp());
             vo.setBlocks(blocks);
             result.add(vo);
         }
         return result;
+    }
+
+    /**
+     * 会话日志按消息 id 去重，而模型服务可能对不同调用返回相同的响应 id
+     * （例如 Ollama 兼容接口连续返回 chatcmpl-629）。此时日志视图只保留先出现的一条，
+     * 后一条消息（通常是整轮工具调用与答案）会从历史中消失。
+     * <p>
+     * 这里用最新状态上下文补齐"同 id 但内容不同"的消息，并给出稳定且唯一的展示 id，
+     * 避免前端消息 key 冲突。状态上下文缺失时保持日志视图不变。
+     */
+    private List<SessionMessage> mergeDuplicateIdMessages(AiUserContext user, AiConversation conversation,
+                                                          List<Msg> transcriptMessages) {
+        List<SessionMessage> messages = new ArrayList<>(transcriptMessages.size());
+        for (Msg message : transcriptMessages) {
+            messages.add(new SessionMessage(message, message.getId()));
+        }
+        AgentState state;
+        try {
+            SessionProjection projection = agent(user).inspectSession(runtimeContext(user, conversation));
+            state = projection == null ? null : projection.restore();
+        } catch (Exception e) {
+            log.warn("读取会话状态失败 conversation={} error={}", conversation.getId(), e.getMessage());
+            return messages;
+        }
+        if (state == null || state.getContext() == null || state.getContext().isEmpty()) {
+            return messages;
+        }
+        Map<String, List<String>> signatures = new HashMap<>();
+        Map<String, Integer> lastIndex = new HashMap<>();
+        Map<String, Integer> occurrences = new HashMap<>();
+        for (int i = 0; i < messages.size(); i++) {
+            SessionMessage message = messages.get(i);
+            String id = message.id();
+            if (StringUtils.isBlank(id)) {
+                continue;
+            }
+            lastIndex.put(id, i);
+            signatures.computeIfAbsent(id, key -> new ArrayList<>()).add(contentSignature(message.message()));
+            occurrences.merge(id, 1, Integer::sum);
+        }
+        Map<Integer, List<SessionMessage>> inserts = new LinkedHashMap<>();
+        for (Msg message : state.getContext()) {
+            String id = message.getId();
+            if (StringUtils.isBlank(id) || !signatures.containsKey(id)) {
+                continue;
+            }
+            String signature = contentSignature(message);
+            List<String> recorded = signatures.get(id);
+            if (recorded.contains(signature)) {
+                continue;
+            }
+            recorded.add(signature);
+            int occurrence = occurrences.merge(id, 1, Integer::sum);
+            SessionMessage recovered = new SessionMessage(message, id + "#" + occurrence);
+            inserts.computeIfAbsent(lastIndex.get(id), key -> new ArrayList<>()).add(recovered);
+        }
+        if (inserts.isEmpty()) {
+            return messages;
+        }
+        List<SessionMessage> merged = new ArrayList<>(messages.size() + inserts.size());
+        for (int i = 0; i < messages.size(); i++) {
+            merged.add(messages.get(i));
+            List<SessionMessage> extra = inserts.get(i);
+            if (extra != null) {
+                merged.addAll(extra);
+            }
+        }
+        return merged;
+    }
+
+    /** 用于识别同 id 不同正文的消息；统一用同一序列化器保证比较口径一致。 */
+    private String contentSignature(Msg message) {
+        return JSON.toJSONString(message.getContent());
+    }
+
+    private record SessionMessage(Msg message, String id) {
+    }
+
+    /**
+     * 把 returnDirect 收尾助手消息中的接口结果按顺序回填到对应工具块。
+     * <p>
+     * 框架在上下文里用占位文本替换了工具结果，只在这条助手消息中保留完整输出；
+     * 历史展示需要把这份输出挂回工具块，否则刷新后只剩占位说明。
+     */
+    private void applyReturnDirectResults(Msg msg, List<Map<String, Object>> directTools) {
+        if (directTools.isEmpty() || msg.getContent() == null) {
+            directTools.clear();
+            return;
+        }
+        int index = 0;
+        for (ContentBlock block : msg.getContent()) {
+            if (index >= directTools.size()) {
+                break;
+            }
+            if (block instanceof TextBlock text && text.getText() != null) {
+                Map<String, Object> node = directTools.get(index++);
+                node.put("result", text.getText());
+                node.put("state", "SUCCESS");
+            }
+        }
+        directTools.clear();
     }
 
     public String transcriptText(AiUserContext user, String conversationId) {
@@ -545,7 +674,11 @@ public class AiChatService {
     }
 
     private HarnessAgent agent(AiUserContext user) {
-        return agentFactory.getAgent(user, promptService.resolveSystemPrompt(user));
+        return agent(user, null);
+    }
+
+    private HarnessAgent agent(AiUserContext user, String modelId) {
+        return agentFactory.getAgent(user, promptService.resolveSystemPrompt(user), modelId);
     }
 
     private RuntimeContext runtimeContext(AiUserContext user, AiConversation conversation) {

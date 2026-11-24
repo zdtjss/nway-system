@@ -5,6 +5,7 @@ import com.nway.system.ai.domain.AiUserContext;
 import com.nway.system.ai.tool.GetInterfaceConfigTool;
 import com.nway.system.ai.tool.InvokeInterfaceTool;
 import com.nway.system.ai.tool.LookupOptionsTool;
+import com.nway.system.ai.tool.QueryInterfaceTool;
 import com.nway.system.ai.tool.ReadFileTool;
 import com.nway.system.ai.entity.AiModel;
 import io.agentscope.core.permission.PermissionContextState;
@@ -17,6 +18,7 @@ import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -31,7 +33,7 @@ import java.util.HexFormat;
  * HarnessAgent 工厂：按「模型 + 系统提示词」缓存 Agent。
  * <p>
  * Agent 本身无会话状态（会话在 Redis），可跨用户复用；提示词变化即换缓存键。
- * 工具永远只有 2 个：get_interface_config / invoke_interface。
+ * 核心工具 3 个：get_interface_config / query_interface（查询直返）/ invoke_interface。
  *
  * @author nway
  */
@@ -46,6 +48,7 @@ public class AiAgentFactory {
     private final AgentStateStore stateStore;
     private final AiModelService modelService;
     private final GetInterfaceConfigTool getInterfaceConfigTool;
+    private final QueryInterfaceTool queryInterfaceTool;
     private final InvokeInterfaceTool invokeInterfaceTool;
     private final LookupOptionsTool lookupOptionsTool;
     private final ReadFileTool readFileTool;
@@ -59,7 +62,8 @@ public class AiAgentFactory {
 
     public AiAgentFactory(AgentStateStore stateStore, AiModelService modelService,
                           GetInterfaceConfigTool getInterfaceConfigTool,
-                          InvokeInterfaceTool invokeInterfaceTool,
+                          @Qualifier("queryInterfaceTool") QueryInterfaceTool queryInterfaceTool,
+                          @Qualifier("invokeInterfaceTool") InvokeInterfaceTool invokeInterfaceTool,
                           LookupOptionsTool lookupOptionsTool,
                           ReadFileTool readFileTool,
                           DistributedStore distributedStore,
@@ -69,6 +73,7 @@ public class AiAgentFactory {
         this.stateStore = stateStore;
         this.modelService = modelService;
         this.getInterfaceConfigTool = getInterfaceConfigTool;
+        this.queryInterfaceTool = queryInterfaceTool;
         this.invokeInterfaceTool = invokeInterfaceTool;
         this.lookupOptionsTool = lookupOptionsTool;
         this.readFileTool = readFileTool;
@@ -86,7 +91,14 @@ public class AiAgentFactory {
     }
 
     public HarnessAgent getAgent(AiUserContext user, String systemPrompt) {
-        AiModel modelEntity = modelService.getDefaultModel(user.effectiveTenantCode());
+        return getAgent(user, systemPrompt, null);
+    }
+
+    /**
+     * 按用户选择的模型构建 Agent；modelId 为空时使用租户默认模型。
+     */
+    public HarnessAgent getAgent(AiUserContext user, String systemPrompt, String modelId) {
+        AiModel modelEntity = modelService.getChatModel(user.effectiveTenantCode(), modelId);
         String prompt = systemPrompt + optionalToolHint();
         String promptHash = sha256(prompt);
         String key = modelEntity.getId() + ":" + modelEntity.getModifiedTime() + ":" + promptHash;
@@ -105,10 +117,10 @@ public class AiAgentFactory {
     private String optionalToolHint() {
         StringBuilder sb = new StringBuilder();
         if (lookupOptionsEnabled) {
-            sb.append("\n9. 字段带 optionSource 或候选值过多时，可用 lookup_options(interfaceCode, fieldKey, keyword) 查询候选值。");
+            sb.append("\n12. 字段带 optionSource 或候选值过多时，可用 lookup_options(interfaceCode, fieldKey, keyword) 查询候选值。");
         }
         if (readFileEnabled) {
-            sb.append("\n10. 附件：图片已随消息直接提供，可直接分析；文档用 read_file(fileId) 按需读取；"
+            sb.append("\n13. 附件：图片已随消息直接提供，可直接分析；文档用 read_file(fileId) 按需读取；"
                     + "纯粹的文件内容分析不要调用业务接口，需要读文件再调接口时先 read_file 提取信息。");
         }
         return sb.toString();
@@ -117,6 +129,7 @@ public class AiAgentFactory {
     private HarnessAgent build(String systemPrompt, AiModel modelEntity) {
         Toolkit toolkit = new Toolkit();
         toolkit.registerAgentTool(getInterfaceConfigTool);
+        toolkit.registerAgentTool(queryInterfaceTool);
         toolkit.registerAgentTool(invokeInterfaceTool);
         if (lookupOptionsEnabled) {
             toolkit.registerAgentTool(lookupOptionsTool);

@@ -1,22 +1,35 @@
 -- ========================================
--- 23. OA BPM 流程菜单（来源：nway-app-web 流程中心 col.js）
---
--- 目标应用：OA BPM（sys_app.app_code = bpm，tenant_code = OA）
--- 菜单结构：13 个业务域目录 + 137 个申请页
--- 页面地址：相对路径 /#/<路由>，由后端 MenuService 拼接 app.host；
---           app.host 需包含 app-web 部署子路径（本地 http://localhost:9528；
---           生产如 https://sso.nway.net.cn/digital，拼接后即 /digital/#/<路由>）
--- 渲染方式：wujie（app-web 为 Vue2 子应用）
---
--- 数据来源与过滤规则：
---   1) 目录与页面名称、路由、流程编码均取自 col.js detailListConfig；
---   2) 跳过 path 为 '11111111'/空/非页面路由的旧引擎专属流程；
---   3) 跳过 app-web 路由表中不存在的 CLFK（材料付款单）；
---   4) 跳过与 IT 类重复的 ECM/SystemPermissionApply。
---
--- 幂等：先按本脚本固定 id 前缀清理，再全量写入（仅影响本脚本生成的菜单）。
+-- 10. OA / BPM 集成：OA 租户与 BPM 流程菜单（DML）
+--   覆盖：
+--     - OA 迁移租户 nway（幂等：已存在未删除记录时跳过）
+--     - BPM 应用菜单：13 个业务域目录 + 137 个申请页
+--   前置：
+--     - 01_platform_tenant_app.sql（sys_tenant）
+--     - 02_permission_authz.sql（sys_menu）
+--   说明：
+--     - 目标应用 sys_app.app_code='bpm' 的 host / api_base_url 需在库中配置，未纳入本脚本
+--     - 菜单来源：nway-app-web 流程中心 col.js detailListConfig
+--     - 页面地址：相对路径 /#/<路由>，由后端 MenuService 拼接 app.host；
+--       app.host 需包含 app-web 部署子路径（本地 http://localhost:9528；
+--       生产如 https://sso.nway.net.cn/digital，拼接后即 /digital/#/<路由>）
+--     - 渲染方式：wujie（app-web 为 Vue2 子应用）
+--     - 数据过滤规则：
+--       1) 目录与页面名称、路由、流程编码均取自 col.js detailListConfig；
+--       2) 跳过 path 为 '11111111'/空/非页面路由的旧引擎专属流程；
+--       3) 跳过 app-web 路由表中不存在的 CLFK（材料付款单）；
+--       4) 跳过与 IT 类重复的 ECM/SystemPermissionApply
+--     - 幂等：先按本脚本固定 id 前缀清理，再全量写入（仅影响本脚本生成的菜单）
 -- ========================================
 
+-- OA 登录替代：初始化 OA 租户（首期单租户 nway，承载 OA 用户登录、菜单与应用）
+INSERT INTO sys_tenant (id, tenant_code, tenant_name, status, remark, creator_id, creator_name, create_time, is_deleted)
+SELECT 'tenant_nway', 'nway', '演示', 'using', 'OA 体系迁移租户：承载 nway 登录与 OA 应用', '001', '系统', NOW(), 0
+FROM DUAL
+WHERE NOT EXISTS (
+    SELECT 1 FROM sys_tenant WHERE tenant_code = 'nway' AND is_deleted = 0
+);
+
+-- ---------- BPM 流程菜单 ----------
 DELETE FROM sys_menu WHERE app_code = 'bpm' AND id LIKE 'm_bpm_%';
 
 -- 1. 业务域目录
