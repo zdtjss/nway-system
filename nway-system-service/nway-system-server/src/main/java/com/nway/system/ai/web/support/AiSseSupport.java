@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -131,6 +132,12 @@ public final class AiSseSupport {
             case AGENT_END -> {
                 payload.put("type", "reply.end");
                 payload.put("replyId", ((AgentEndEvent) event).getReplyId());
+                // 模型结束原因：SDK 透传时一并下发，前端据此区分长度截断与正常结束
+                Map<String, Object> metadata = event.getMetadata();
+                Object reason = metadata == null ? null : metadata.get(AgentEvent.METADATA_GENERATE_REASON);
+                if (reason != null) {
+                    payload.put("finishReason", String.valueOf(reason).toLowerCase(Locale.ROOT));
+                }
             }
             case EXCEED_MAX_ITERS -> {
                 ExceedMaxItersEvent e = (ExceedMaxItersEvent) event;

@@ -214,6 +214,24 @@ export interface AiMessage {
   blocks: AiMessageBlock[]
 }
 
+/**
+ * 历史消息按模型轮次落库：一次提问会产生多条助手消息，每轮都带自己的思考与工具调用。
+ * 展示前合并相邻的助手消息，让历史记录与实时流式一样，一次提问只出现一张回复卡片、一个思考过程。
+ */
+export function mergeAssistantMessages(messages: AiMessage[]): AiMessage[] {
+  const merged: AiMessage[] = []
+  for (const message of messages || []) {
+    const last = merged[merged.length - 1]
+    if (message?.role === 'assistant' && last?.role === 'assistant') {
+      last.blocks = [...(last.blocks || []), ...(message.blocks || [])]
+      last.timestamp = message.timestamp || last.timestamp
+      continue
+    }
+    merged.push({ ...message, blocks: [...(message.blocks || [])] })
+  }
+  return merged
+}
+
 export interface ChatEvent {
   type: string
   [key: string]: any
@@ -363,8 +381,12 @@ export const promotePrompt = (id: string, scopeType: string, scopeId?: string, r
   http.post<Result<AiPromptVo>>(`/ai/prompts/${id}/promote`, null, { params: { scopeType, scopeId, roleCode } })
     .then((r: any) => r.data)
 
+/** 从对话提取提示词为整段模型生成，耗时可能超过默认 30s，单独放宽到 5 分钟 */
+const EXTRACT_PROMPT_TIMEOUT_MS = 300_000
+
 export const extractPrompt = (body: { conversationId: string; name?: string; promptType?: string }) =>
-  http.post<Result<{ content: string; name: string; promptType: string }>>('/ai/prompts/extract', body)
+  http.post<Result<{ content: string; name: string; promptType: string }>>('/ai/prompts/extract', body,
+    { timeout: EXTRACT_PROMPT_TIMEOUT_MS })
     .then((r: any) => r.data)
 
 // ==================== 会话 ====================
@@ -444,50 +466,91 @@ function dispatchSseChunk(chunk: string, onEvent: (event: ChatEvent) => void) {
   }
 }
 
+/** 流式响应空闲上限：超过该时间没有任何事件，说明链路已断，而不是模型还在思考 */
+const SSE_IDLE_TIMEOUT_MS = 180_000
+
+/** 收到任一类型即视为本轮已正常收尾；缺失说明连接被提前关闭 */
+const SSE_TERMINAL_TYPES = new Set(['reply.end', 'error', 'confirm.required'])
+
 async function streamSse(url: string, body: any, onEvent: (event: ChatEvent) => void,
-                         signal?: AbortSignal): Promise<void> {
-  const response = await fetch(API_BASE + url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: getToken() || ''
-    },
-    body: JSON.stringify(body),
-    signal
-  })
-  if (!response.ok) {
-    if (response.status === 401) {
-      location.href = '/login'
-      throw new Error('登录已失效，请重新登录')
+                         signal?: AbortSignal, idleTimeoutMs = SSE_IDLE_TIMEOUT_MS): Promise<void> {
+  const controller = new AbortController()
+  const abortByCaller = () => controller.abort()
+  signal?.addEventListener('abort', abortByCaller, { once: true })
+  let idleTimedOut = false
+  let terminal = false
+  let idleTimer: number | undefined
+  const resetIdle = () => {
+    window.clearTimeout(idleTimer)
+    // idleTimeoutMs <= 0 表示不设空闲上限，由服务端超时兜底
+    if (idleTimeoutMs <= 0) return
+    idleTimer = window.setTimeout(() => {
+      idleTimedOut = true
+      controller.abort()
+    }, idleTimeoutMs)
+  }
+  const handle = (event: ChatEvent) => {
+    if (SSE_TERMINAL_TYPES.has(event?.type)) terminal = true
+    onEvent(event)
+  }
+  try {
+    const response = await fetch(API_BASE + url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: getToken() || ''
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    })
+    if (!response.ok) {
+      if (response.status === 401) {
+        location.href = '/login'
+        throw new Error('登录已失效，请重新登录')
+      }
+      const text = await response.text().catch(() => '')
+      throw new Error(text || `请求失败（HTTP ${response.status}）`)
     }
-    const text = await response.text().catch(() => '')
-    throw new Error(text || `请求失败（HTTP ${response.status}）`)
-  }
-  if (!response.body) {
-    throw new Error('浏览器不支持流式响应')
-  }
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder('utf-8')
-  let buffer = ''
-  // 统一换行符，避免服务端/代理使用 \r\n 时无法按空行切分事件
-  const append = (text: string) => {
-    buffer = (buffer + text).replace(/\r\n/g, '\n')
-  }
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    append(decoder.decode(value, { stream: true }))
-    let index = buffer.indexOf('\n\n')
-    while (index >= 0) {
-      dispatchSseChunk(buffer.slice(0, index), onEvent)
-      buffer = buffer.slice(index + 2)
-      index = buffer.indexOf('\n\n')
+    if (!response.body) {
+      throw new Error('浏览器不支持流式响应')
     }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+    // 统一换行符，避免服务端/代理使用 \r\n 时无法按空行切分事件
+    const append = (text: string) => {
+      buffer = (buffer + text).replace(/\r\n/g, '\n')
+    }
+    resetIdle()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      resetIdle()
+      append(decoder.decode(value, { stream: true }))
+      let index = buffer.indexOf('\n\n')
+      while (index >= 0) {
+        dispatchSseChunk(buffer.slice(0, index), handle)
+        buffer = buffer.slice(index + 2)
+        index = buffer.indexOf('\n\n')
+      }
+    }
+    // 尾包可能没有以空行结束，仍需分发，避免丢失最后一个事件
+    append(decoder.decode())
+    if (buffer.trim()) {
+      dispatchSseChunk(buffer, handle)
+    }
+  } catch (error) {
+    if (idleTimedOut) {
+      throw new Error('模型长时间没有返回内容，连接已断开，请重试')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(idleTimer)
+    signal?.removeEventListener('abort', abortByCaller)
   }
-  // 尾包可能没有以空行结束，仍需分发，避免丢失最后一个事件
-  append(decoder.decode())
-  if (buffer.trim()) {
-    dispatchSseChunk(buffer, onEvent)
+  // SSE 的状态码在响应头就已返回，只能按是否收到收尾事件判断内容是否完整
+  if (!terminal) {
+    throw new Error('连接提前中断，回答可能不完整，请重试')
   }
 }
 
@@ -513,8 +576,16 @@ export const streamChat = (
   signal?: AbortSignal
 ) => streamSse('/ai/chat/stream', body, onEvent, signal)
 
+/** 写操作确认后的执行流不设空闲上限：中途放弃会拿不到业务执行结果，交给服务端超时兜底 */
 export const streamConfirm = (
   body: { conversationId: string; replyId: string; modelId?: string | null; decisions: any[] },
   onEvent: (event: ChatEvent) => void,
   signal?: AbortSignal
-) => streamSse('/ai/chat/confirm', body, onEvent, signal)
+) => streamSse('/ai/chat/confirm', body, onEvent, signal, 0)
+
+/**
+ * 停止当前会话正在生成的回复。
+ * 连接中断、空闲超时或用户点击停止后调用，让后端结束本轮并释放会话写入权。
+ */
+export const cancelChat = (body: { conversationId: string; replyId?: string }) =>
+  http.post<Result<void>>('/ai/chat/cancel', body, { timeout: 5000 }).then((r: any) => r.data)

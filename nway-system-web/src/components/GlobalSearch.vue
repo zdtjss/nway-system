@@ -157,6 +157,9 @@
                                 </div>
                                 <div v-if="msg.toolTip" class="gs-ai-tool-tip">{{ msg.toolTip }}</div>
                                 <div v-if="msg.error" class="gs-ai-error">{{ msg.error }}</div>
+                                <div v-if="msg.truncated" class="gs-ai-truncated">
+                                    回答已达模型单次输出上限，内容可能不完整，可在完整对话中回复「继续」。
+                                </div>
                                 <button v-if="msg.needFullChat" type="button" class="gs-ai-jump" @click="openFullChat">
                                     打开完整对话继续
                                     <el-icon><TopRight /></el-icon>
@@ -297,11 +300,12 @@ import {
     Paperclip, Plus, Promotion, Reading, Search, TopRight, VideoPause
 } from '@element-plus/icons-vue'
 import http from '@/js/httpProxy.js'
-import { assetUrl, deleteChatFile, getMessages, listConversations, streamChat, uploadChatFile } from '@/api/ai'
+import { assetUrl, deleteChatFile, getMessages, listConversations, mergeAssistantMessages, streamChat, uploadChatFile } from '@/api/ai'
 import AiMarkdown from '@/components/ai/AiMarkdown.vue'
 import AiViewBlock from '@/components/ai/AiViewBlock.vue'
-import { buildInvokeView, rememberInterfaceConfig, splitViewSegments } from '@/utils/aiView'
+import { EXPORT_TOOL, buildExportView, buildInvokeView, rememberInterfaceConfig, splitViewSegments } from '@/utils/aiView'
 import { followBottom, followLast, trackFollowScroll } from '@/utils/scrollFollow'
+import { speak, stopSpeak, toSpeakableText, ttsSupported } from '@/utils/tts'
 import { getToken } from '@/utils/auth'
 import { buildPageTextSnapshot, capturePageScreenshot } from '@/utils/pageContext'
 import { useCurrentPageStore } from '@/stores/menuStore'
@@ -985,7 +989,13 @@ const INVOKE_TOOL = 'invoke_interface'
 const QUERY_TOOL = 'query_interface'
 
 function isResultTool(name) {
-    return name === INVOKE_TOOL || name === QUERY_TOOL
+    return name === INVOKE_TOOL || name === QUERY_TOOL || name === EXPORT_TOOL
+}
+
+// 工具结果视图：导出工具渲染为下载文件卡片，接口调用按出参结构渲染
+function buildToolView(name, result) {
+    if (name === EXPORT_TOOL) return buildExportView(result)
+    return isResultTool(name) ? buildInvokeView(result) : null
 }
 // get_interface_config 的流式结果先暂存，结束后整体解析为接口字段定义
 const aiPendingConfig = new Map()
@@ -1040,7 +1050,7 @@ function handleAiEvent(event, target) {
                 const tool = target.tools.find((item) => item.id === event.toolCallId)
                 if (tool) {
                     tool.status = event.state === 'ERROR' || event.state === 'DENIED' ? 'error' : 'done'
-                    tool.view = buildInvokeView(tool.result)
+                    tool.view = buildToolView(tool.name, tool.result)
                 }
             }
             break
@@ -1057,6 +1067,10 @@ function handleAiEvent(event, target) {
             break
         case 'reply.end':
             target.streaming = false
+            // 模型因单次输出上限结束时没有异常，只能靠结束原因识别
+            if (event.truncated || /length|max_token/i.test(String(event.finishReason || ''))) {
+                target.truncated = true
+            }
             // 思考过程只在流式期间自动展开，结束后收起，避免看起来模型仍在推理
             if (aiThinkingOpen.value.has(target.id)) {
                 aiThinkingOpen.value.delete(target.id)
@@ -1295,7 +1309,7 @@ async function openAiConversation(conv) {
     try {
         const res = await getMessages(conv.id)
         if (seq !== aiMessageSeq) return
-        const list = (res.data || []).map(toPanelMessage)
+        const list = mergeAssistantMessages(res.data || []).map(toPanelMessage)
         restoreCompletedTools(list)
         aiMessages.value = list
         scrollAiToBottom(true)
@@ -1386,13 +1400,13 @@ function toPanelMessage(message) {
                 return
             }
             const result = block.result || ''
-            let view = isResultTool(name) ? buildInvokeView(result) : null
+            let view = isResultTool(name) ? buildToolView(name, result) : null
             if (isResultTool(name) && !view) {
                 // 简易面板不展开原始报文：无结果说明调用未完成，有结果则提示去完整对话查看
                 view = {
                     type: 'empty',
                     text: result
-                        ? '接口已返回结果，但内容不便在简易窗口展示，请在完整对话中查看。'
+                        ? '工具已返回结果，但内容不便在简易窗口展示，请在完整对话中查看。'
                         : '本次调用未完成（等待确认或会话已中断），暂无返回结果。'
                 }
             }
@@ -1416,13 +1430,14 @@ function toPanelMessage(message) {
 /**
  * 确认执行的写操作，工具结果可能没回填到历史消息里（只有 tool_use 没有 result）。
  * 该轮之后还有助手正文，说明调用已经执行完成，不能标成未完成。
+ * 相邻助手消息已按一次提问合并，后续正文可能与本条工具调用在同一消息内。
  */
 function restoreCompletedTools(messages) {
     messages.forEach((message, index) => {
         const tools = message.tools || []
         if (!tools.some((tool) => tool.status === 'interrupted')) return
-        let completed = false
-        for (let i = index + 1; i < messages.length; i += 1) {
+        let completed = !!(message.text || '').trim()
+        for (let i = index + 1; !completed && i < messages.length; i += 1) {
             const next = messages[i]
             if (next.role === 'user') break
             if ((next.text || '').trim()) {
@@ -1592,7 +1607,6 @@ async function onAiPaste(event) {
 // ---------- 语音输入与播报 ----------
 const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition || null
 const speechRecognitionSupported = !!SpeechRecognitionClass
-const ttsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window
 
 const VOICE_ERRORS = {
     'not-allowed': '麦克风权限被拒绝，请在浏览器设置中允许后重试',
@@ -1601,15 +1615,12 @@ const VOICE_ERRORS = {
     network: '语音识别服务连接失败，请检查网络后重试'
 }
 
-const MAX_SPEECH_CHUNK = 160
-
 const voiceActive = ref(false)
 const speakingId = ref(null)
 
 let recognition = null
 let voiceBaseText = ''
 let voiceManualStop = false
-let speechToken = 0
 
 const voiceTitle = computed(() => {
     if (!speechRecognitionSupported) return '当前浏览器不支持语音输入，建议使用 Chrome 或 Edge'
@@ -1700,88 +1711,17 @@ function speakAiMessage(message) {
     const text = toSpeakableText(message.text)
     if (!text) return
     stopAiSpeaking()
-    const token = ++speechToken
-    speakingId.value = message.id
-    const chunks = splitForSpeech(text)
-    // cancel 后立即 speak 在部分浏览器会被忽略，延后一帧再入队
-    window.setTimeout(() => {
-        if (token !== speechToken) return
-        const voice = pickChineseVoice()
-        chunks.forEach((chunk, index) => {
-            const utterance = new SpeechSynthesisUtterance(chunk)
-            if (voice) utterance.voice = voice
-            utterance.lang = voice?.lang || 'zh-CN'
-            utterance.rate = 1
-            if (index === chunks.length - 1) {
-                utterance.onend = () => {
-                    if (token === speechToken) speakingId.value = null
-                }
-            }
-            utterance.onerror = () => {
-                if (token === speechToken) speakingId.value = null
-            }
-            window.speechSynthesis.speak(utterance)
-        })
-    }, 0)
+    const id = message.id
+    speakingId.value = id
+    const clear = () => {
+        if (speakingId.value === id) speakingId.value = null
+    }
+    speak(text, { onEnd: clear, onError: clear })
 }
 
 function stopAiSpeaking() {
-    speechToken += 1
     speakingId.value = null
-    if (ttsSupported) window.speechSynthesis.cancel()
-}
-
-function pickChineseVoice() {
-    const voices = window.speechSynthesis.getVoices()
-    return voices.find((voice) => /^zh[-_]cn/i.test(voice.lang))
-        || voices.find((voice) => /^zh/i.test(voice.lang))
-        || null
-}
-
-// 播报前去掉 Markdown 标记、代码块、链接地址与表格，只保留自然语言
-function toSpeakableText(markdown) {
-    return markdown
-        .replace(/```[\s\S]*?```/g, ' ')
-        .replace(/~~~[\s\S]*?~~~/g, ' ')
-        .replace(/!\[[^\]]*]\([^)]*\)/g, ' ')
-        .replace(/\[([^\]]*)]\([^)]*\)/g, '$1')
-        .replace(/^\s*\|.*\|\s*$/gm, '')
-        .replace(/^\s*[-*+]\s+/gm, '')
-        .replace(/^\s*\d+\.\s+/gm, '')
-        .replace(/^\s*#{1,6}\s*/gm, '')
-        .replace(/^\s*>\s?/gm, '')
-        .replace(/^\s*([-*_])\1{2,}\s*$/gm, '')
-        .replace(/[*_~`]/g, '')
-        .replace(/<[^>]+>/g, '')
-        .replace(/&nbsp;/g, ' ')
-        .replace(/\n{2,}/g, '\n')
-        .trim()
-}
-
-// 长回复按句子切成小段依次播报，避免部分浏览器截断超长文本
-function splitForSpeech(text) {
-    const sentences = text.match(/[^。！？!?；;\n]+[。！？!?；;\n]?/g) || [text]
-    const chunks = []
-    let current = ''
-    sentences.forEach((sentence) => {
-        const piece = sentence.trim()
-        if (!piece) return
-        if (current && current.length + piece.length > MAX_SPEECH_CHUNK) {
-            chunks.push(current)
-            current = ''
-        }
-        if (piece.length <= MAX_SPEECH_CHUNK) {
-            current += piece
-            return
-        }
-        for (let i = 0; i < piece.length; i += MAX_SPEECH_CHUNK) {
-            const slice = piece.slice(i, i + MAX_SPEECH_CHUNK)
-            if (slice.length === MAX_SPEECH_CHUNK) chunks.push(slice)
-            else current = slice
-        }
-    })
-    if (current) chunks.push(current)
-    return chunks
+    stopSpeak()
 }
 
 // 轻量对话 → 完整对话：把会话、消息、未发送的输入与附件、待确认操作一并交接过去
@@ -3177,6 +3117,17 @@ onBeforeUnmount(() => {
     font-size: 12px;
     line-height: 1.5;
     color: #d9534f;
+}
+
+.gs-ai-truncated {
+    margin-top: 6px;
+    padding: 6px 9px;
+    border: 1px solid #f7e2b7;
+    border-radius: 8px;
+    background: #fffaf0;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: #a8730a;
 }
 
 .gs-ai-jump {

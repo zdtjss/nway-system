@@ -38,6 +38,9 @@ public class AiModelService {
     private final AiModelDao modelDao;
     private final AiCrypto crypto;
 
+    /** 未配置时的单次输出上限：过小会让长回答在模型侧被静默截断 */
+    public static final int DEFAULT_MAX_TOKENS = 8192;
+
     private static final BigDecimal MIN_PENALTY = new BigDecimal("-2");
     private static final BigDecimal MAX_PENALTY = new BigDecimal("2");
 
@@ -212,7 +215,7 @@ public class AiModelService {
         String apiKey = crypto.decrypt(entity.getApiKeyCipher());
         GenerateOptions.Builder optionsBuilder = GenerateOptions.builder()
                 .temperature(entity.getTemperature() == null ? 0.3 : entity.getTemperature().doubleValue())
-                .maxTokens(entity.getMaxTokens() == null ? 4096 : entity.getMaxTokens());
+                .maxTokens(effectiveMaxTokens(entity));
         if (entity.getTopP() != null) {
             optionsBuilder.topP(entity.getTopP().doubleValue());
         }
@@ -252,6 +255,12 @@ public class AiModelService {
                 entity.getThinkingEnabled(), options.getThinkingBudget(), entity.getContextWindowTokens(),
                 resolveVisionSupported(entity));
         return modelBuilder.build();
+    }
+
+    /** 实际生效的单次输出上限，未配置时使用默认值。 */
+    public int effectiveMaxTokens(AiModel entity) {
+        return entity == null || entity.getMaxTokens() == null
+                ? DEFAULT_MAX_TOKENS : entity.getMaxTokens();
     }
 
     /** 视觉能力：显式配置优先，未配置时按模型名自动识别。 */

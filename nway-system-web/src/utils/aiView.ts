@@ -6,6 +6,9 @@
  *
  * 视图只包含纯数据，渲染层统一使用文本绑定，不使用 v-html。
  */
+import { assetUrl } from '@/api/ai'
+
+export const EXPORT_TOOL = 'export_analysis'
 
 export type AiViewValueKind = 'text' | 'number' | 'boolean' | 'link' | 'code' | 'empty'
 
@@ -377,6 +380,55 @@ function fillEmptyMessage(view: AiView) {
   if (view.success && view.type === 'empty' && !view.message) {
     view.message = '查询完成，暂无数据'
   }
+}
+
+// ==================== 导出工具结果 ====================
+
+/**
+ * export_analysis 的结果：渲染为带下载链接的文件卡片。
+ * 后端返回的是 context-path 相对地址，这里补全为浏览器可访问地址。
+ */
+export function buildExportView(raw?: string | null): AiView | null {
+  if (!raw) return null
+  let result: any
+  try {
+    result = JSON.parse(raw)
+  } catch (e) {
+    return null
+  }
+  if (!result || typeof result !== 'object') return null
+  if (result.error) {
+    return {
+      type: 'empty',
+      success: false,
+      message: typeof result.message === 'string' && result.message
+        ? result.message
+        : String(result.error)
+    }
+  }
+  if (typeof result.url !== 'string' || !result.url) return null
+  return {
+    type: 'file',
+    success: true,
+    title: '导出文件',
+    interfaceName: '导出文件',
+    message: typeof result.message === 'string' && result.message
+      ? result.message
+      : '文件已生成，点击文件名下载',
+    files: [{
+      name: typeof result.fileName === 'string' && result.fileName ? result.fileName : 'AI 分析结果',
+      url: assetUrl(result.url),
+      size: formatExportSize(result.size)
+    }]
+  }
+}
+
+function formatExportSize(size: any): string | undefined {
+  const bytes = Number(size)
+  if (!Number.isFinite(bytes) || bytes <= 0) return undefined
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 /**

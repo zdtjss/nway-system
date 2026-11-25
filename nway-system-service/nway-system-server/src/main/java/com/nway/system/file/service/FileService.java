@@ -25,6 +25,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.DigestInputStream;
@@ -78,6 +79,34 @@ public class FileService {
      */
     public FileVo upload(MultipartFile file, String bizType, String bizId, String remark) {
         FileTypePolicy.Validated validated = fileTypePolicy.validate(file);
+        try (InputStream in = file.getInputStream()) {
+            return persist(in, validated.size(), validated.fileName(), validated.ext(),
+                    validated.contentType(), bizType, bizId, remark);
+        } catch (IOException e) {
+            throw new NwaySystemException("文件读取失败", e);
+        }
+    }
+
+    /**
+     * 服务端生成文件落库（如 AI 分析结果导出）。
+     * <p>
+     * 内容由服务端生成，不受上传扩展名白名单限制，但仍复用统一的存储路由、元数据、摘要与补偿删除。
+     */
+    public FileVo saveGenerated(byte[] content, String fileName, String bizType, String bizId, String remark) {
+        if (content == null || content.length == 0) {
+            throw new NwaySystemException("生成文件内容不能为空");
+        }
+        String name = fileTypePolicy.sanitizeName(fileName);
+        String ext = extensionOf(name);
+        if (StringUtils.isBlank(ext)) {
+            throw new NwaySystemException("文件名缺少扩展名");
+        }
+        return persist(new ByteArrayInputStream(content), content.length, name, ext,
+                fileTypePolicy.contentTypeOf(ext), bizType, bizId, remark);
+    }
+
+    private FileVo persist(InputStream source, long size, String fileName, String ext, String contentType,
+                           String bizType, String bizId, String remark) {
         String tenantCode = TenantUtil.currentTenantCode();
         if (StringUtils.isBlank(tenantCode)) {
             throw new NwaySystemException("无法确定当前租户");
@@ -86,22 +115,22 @@ public class FileService {
         String safeBizId = validateText(bizId, MAX_BIZ_ID_LENGTH, "业务单据ID");
         String safeRemark = validateText(remark, MAX_REMARK_LENGTH, "备注");
 
-        String storageKey = storageKeyGenerator.generate(tenantCode, validated.ext());
+        String storageKey = storageKeyGenerator.generate(tenantCode, ext);
         FileStorage storage = storageRegistry.defaultStorage();
         MessageDigest digest = sha256Digest();
-        try (InputStream in = new DigestInputStream(file.getInputStream(), digest)) {
-            storage.store(storageKey, in, validated.size(), validated.contentType());
+        try (InputStream in = new DigestInputStream(source, digest)) {
+            storage.store(storageKey, in, size, contentType);
         } catch (IOException e) {
             throw new NwaySystemException("文件写入失败", e);
         }
 
         SysFile entity = new SysFile();
-        entity.setFileName(validated.fileName());
+        entity.setFileName(fileName);
         entity.setStorageType(storage.type());
         entity.setStorageKey(storageKey);
-        entity.setFileSize(validated.size());
-        entity.setContentType(validated.contentType());
-        entity.setFileExt(validated.ext());
+        entity.setFileSize(size);
+        entity.setContentType(contentType);
+        entity.setFileExt(ext);
         entity.setSha256(HexFormat.of().formatHex(digest.digest()));
         entity.setBizType(safeBizType);
         entity.setBizId(safeBizId);
@@ -210,6 +239,14 @@ public class FileService {
                 ? employeeId.substring(0, MAX_OPERATOR_LENGTH) : employeeId;
         entity.setCreatorId(operator);
         entity.setModifierId(operator);
+    }
+
+    private String extensionOf(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        if (dot < 0 || dot == fileName.length() - 1) {
+            return "";
+        }
+        return fileName.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
     }
 
     private String validateText(String value, int maxLength, String label) {

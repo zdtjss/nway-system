@@ -47,7 +47,9 @@ public class FileTypePolicy {
             Map.entry("csv", "text/csv"),
             Map.entry("zip", "application/zip"),
             Map.entry("rar", "application/vnd.rar"),
-            Map.entry("7z", "application/x-7z-compressed"));
+            Map.entry("7z", "application/x-7z-compressed"),
+            // 服务端生成的分析结果导出文件，仅用于 MIME 映射（HTML 不在上传白名单内）
+            Map.entry("html", "text/html"));
 
     private final FileProperties properties;
 

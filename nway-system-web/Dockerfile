@@ -74,8 +74,9 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 30s;
-        proxy_read_timeout 60s;
+        proxy_connect_timeout 60s;
+        # 提示词提取等同步模型调用耗时较长，读超时放宽到 5 分钟
+        proxy_read_timeout 300s;
     }
 
     # 兼容 /api/ 前缀访问
@@ -99,6 +100,8 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 300s;
     }
 }
 NGINX

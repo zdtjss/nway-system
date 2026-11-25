@@ -229,7 +229,9 @@ const tableTip = computed(() => {
 })
 
 function safeHref(href?: string): string | undefined {
-  return href && /^https?:\/\//i.test(href) ? href : undefined
+  if (!href) return undefined
+  // 接口返回的链接只允许 http(s)；导出文件使用站内票据地址，允许根路径
+  return /^https?:\/\//i.test(href) || href.startsWith('/') ? href : undefined
 }
 
 function columnType(index: number): string {

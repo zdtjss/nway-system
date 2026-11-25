@@ -8,6 +8,7 @@ import com.nway.system.ai.service.AiSchemaCompiler;
 import com.nway.system.ai.web.support.AiSseSupport;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -40,6 +41,8 @@ import com.nway.system.authorization.annotation.RequiresPermission;
 import com.nway.system.common.web.PageVo;
 import com.nway.system.common.web.Result;
 
+import jakarta.servlet.http.HttpServletResponse;
+
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.Disposable;
 
@@ -55,6 +58,18 @@ import reactor.core.Disposable;
 public class AiChatController {
 
     private static final long SSE_TIMEOUT_MS = 600_000L;
+
+    /**
+     * 单机内的活动对话流：同一会话同一时刻只允许一个生成任务。
+     * 浏览器断开（前端超时/停止/关闭页面）时后端不一定能立刻感知，遗留流会一直占着会话写入权，
+     * 新消息因此排队或报 “Session already has an active writer”，所以这里显式登记并支持取消。
+     */
+    private final Map<String, ActiveStream> activeStreams = new ConcurrentHashMap<>();
+
+    private record ActiveStream(String key, SseEmitter emitter, AtomicBoolean finished,
+                                AtomicReference<Disposable> disposable,
+                                AtomicReference<String> replyId, boolean cancelable) {
+    }
 
     private final AiChatService chatService;
     private final AiConversationService conversationService;
@@ -79,7 +94,8 @@ public class AiChatController {
     }
 
     @PostMapping(value = "chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream(@RequestBody AiChatRequest request) {
+    public SseEmitter stream(@RequestBody AiChatRequest request, HttpServletResponse response) {
+        disableProxyBuffering(response);
         try {
             AiUserContext user = AiUserContexts.current();
             AiChatService.ChatStream stream = chatService.stream(user, request);
@@ -90,7 +106,8 @@ public class AiChatController {
     }
 
     @PostMapping(value = "chat/confirm", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter confirm(@RequestBody AiConfirmRequest request) {
+    public SseEmitter confirm(@RequestBody AiConfirmRequest request, HttpServletResponse response) {
+        disableProxyBuffering(response);
         try {
             AiUserContext user = AiUserContexts.current();
             if (request.getDecisions() != null) {
@@ -106,6 +123,42 @@ public class AiChatController {
         } catch (Exception e) {
             return errorEmitter(e);
         }
+    }
+
+    /**
+     * 停止当前会话正在生成的回复。前端在连接中断、空闲超时或用户点击停止后调用，
+     * 及时结束本轮事件流并释放会话写入权，避免下一条消息长时间排队或被写锁拒绝。
+     */
+    @PostMapping("chat/cancel")
+    public Result<Void> cancel(@RequestBody(required = false) Map<String, Object> body) {
+        Object rawConversationId = body == null ? null : body.get("conversationId");
+        String conversationId = rawConversationId == null ? null : String.valueOf(rawConversationId).trim();
+        if (conversationId == null || conversationId.isEmpty()) {
+            return Result.ok();
+        }
+        AiUserContext user = AiUserContexts.current();
+        ActiveStream active = activeStreams.get(streamKey(user, conversationId));
+        if (active == null) {
+            return Result.ok();
+        }
+        if (!active.cancelable()) {
+            // 写操作确认后的执行流不允许被打断，避免业务接口调用到一半被取消
+            log.info("忽略写操作执行流的取消请求 conversationId={} employeeId={}",
+                    conversationId, user.getEmployeeId());
+            return Result.ok();
+        }
+        Object rawReplyId = body.get("replyId");
+        String replyId = rawReplyId == null ? null : String.valueOf(rawReplyId);
+        String currentReplyId = active.replyId().get();
+        // 携带 replyId 时必须是当前这一轮：停止后用户立刻发了新消息的场景里，
+        // 迟到的取消请求不能把新一轮（可能还没发出 reply.start）顶掉
+        if (replyId != null && !replyId.equals(currentReplyId)) {
+            return Result.ok();
+        }
+        log.info("用户停止生成 conversationId={} employeeId={} replyId={}",
+                conversationId, user.getEmployeeId(), currentReplyId);
+        cancelStream(active);
+        return Result.ok();
     }
 
     // ==================== 模型 ====================
@@ -178,23 +231,42 @@ public class AiChatController {
 
     // ==================== SSE ====================
 
+    /** 关闭网关与浏览器缓冲，否则 SSE 分片会被攒包，首字延迟且容易整段超时。 */
+    private void disableProxyBuffering(HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-cache");
+        response.setHeader("X-Accel-Buffering", "no");
+    }
+
     private SseEmitter subscribe(AiChatService.ChatStream stream, boolean confirmResume, AiUserContext user) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+        AtomicBoolean finished = new AtomicBoolean(false);
+        AtomicReference<Disposable> disposableRef = new AtomicReference<>();
+        String conversationId = stream.conversation().getId();
+        String key = streamKey(user, conversationId);
+        boolean cancelable = !confirmResume;
+        ActiveStream active = new ActiveStream(key, emitter, finished, disposableRef,
+                new AtomicReference<>(), cancelable);
+        ActiveStream previous = activeStreams.put(key, active);
+        if (previous != null && previous.cancelable()) {
+            // 上一轮多半已被客户端放弃（超时/断网/关页）却不自知，新消息直接顶掉，避免排队等待
+            log.info("终止会话遗留的生成任务 conversationId={} employeeId={}",
+                    conversationId, user.getEmployeeId());
+            cancelStream(previous);
+        }
         try {
             AiSseSupport.send(emitter, AiSseSupport.event("conversation", Map.of(
-                    "conversationId", stream.conversation().getId(),
+                    "conversationId", conversationId,
                     "title", stream.conversation().getTitle() == null ? "" : stream.conversation().getTitle())));
             if (confirmResume) {
                 AiSseSupport.send(emitter, AiSseSupport.event("confirm.accepted", Map.of()));
             }
         } catch (Exception e) {
+            activeStreams.remove(key, active);
             emitter.completeWithError(e);
             return emitter;
         }
 
-        AtomicBoolean finished = new AtomicBoolean(false);
         AtomicBoolean confirmPending = new AtomicBoolean(false);
-        AtomicReference<Disposable> disposableRef = new AtomicReference<>();
         Disposable disposable = stream.events().subscribe(
                 event -> {
                     if (finished.get()) {
@@ -205,6 +277,9 @@ public class AiChatController {
                         if (payload == null) {
                             return;
                         }
+                        if (payload.get("replyId") != null) {
+                            active.replyId().set(String.valueOf(payload.get("replyId")));
+                        }
                         if ("confirm.required".equals(payload.get("type"))) {
                             enrichConfirm(payload, user);
                             confirmPending.set(true);
@@ -214,6 +289,10 @@ public class AiChatController {
                         // 确认后 SDK 还会发 REQUEST_STOP/AGENT_END；不能让前端提前结束等待确认
                         if (confirmPending.get() && "reply.end".equals(payload.get("type"))) {
                             return;
+                        }
+                        if ("reply.end".equals(payload.get("type")) && stream.lengthLimited().get()) {
+                            payload.put("truncated", true);
+                            payload.putIfAbsent("finishReason", "length");
                         }
                         AiSseSupport.send(emitter, payload);
                     } catch (Exception e) {
@@ -240,13 +319,39 @@ public class AiChatController {
                 });
         if (finished.get()) {
             disposable.dispose();
+            activeStreams.remove(key, active);
         } else {
             disposableRef.set(disposable);
         }
-        emitter.onCompletion(() -> dispose(disposableRef));
-        emitter.onTimeout(() -> dispose(disposableRef));
-        emitter.onError(error -> dispose(disposableRef));
+        emitter.onCompletion(() -> {
+            activeStreams.remove(key, active);
+            dispose(disposableRef);
+        });
+        emitter.onTimeout(() -> {
+            activeStreams.remove(key, active);
+            dispose(disposableRef);
+        });
+        emitter.onError(error -> {
+            activeStreams.remove(key, active);
+            dispose(disposableRef);
+        });
         return emitter;
+    }
+
+    private String streamKey(AiUserContext user, String conversationId) {
+        return user.effectiveTenantCode() + ":" + user.getEmployeeId() + ":" + conversationId;
+    }
+
+    /** 结束并移除一个活动流：dispose 会取消上游 Agent 事件流，从而释放会话写入权。 */
+    private void cancelStream(ActiveStream active) {
+        active.finished().set(true);
+        activeStreams.remove(active.key(), active);
+        dispose(active.disposable());
+        try {
+            active.emitter().complete();
+        } catch (Exception ignore) {
+            // 客户端已断开或响应已结束
+        }
     }
 
     /**

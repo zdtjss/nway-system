@@ -251,8 +251,12 @@ public class InvokeInterfaceTool extends ToolBase {
         return ToolResultBlock.text(JSON.toJSONString(body)).withState(ToolResultState.ERROR);
     }
 
+    /**
+     * 直返查询的结果直接展示给用户、不进入模型上下文，无需截断；
+     * 需要模型继续推理时才按字符截断，避免长结果挤占上下文。
+     */
     private String truncate(String json) {
-        if (json == null || json.length() <= MAX_RESULT_LENGTH) {
+        if (directQuery || json == null || json.length() <= MAX_RESULT_LENGTH) {
             return json;
         }
         return json.substring(0, MAX_RESULT_LENGTH) + "…[结果已截断]";

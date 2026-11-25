@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS ai_model (
   api_key_cipher        VARCHAR(1000) COMMENT 'AES-GCM 密文',
   model_name            VARCHAR(100) NOT NULL COMMENT '模型名',
   temperature           DECIMAL(3,2) DEFAULT 0.30,
-  max_tokens            INT          DEFAULT 4096,
+  max_tokens            INT          DEFAULT 8192,
   supports_vision       BIT          NULL COMMENT '视觉分析：NULL 自动识别，1 支持，0 不支持',
   context_window_tokens INT          NULL COMMENT '最大上下文 token，空则按模型名自动识别',
   top_p                 DECIMAL(4,3) NULL COMMENT '核采样 top_p，范围 0~1',

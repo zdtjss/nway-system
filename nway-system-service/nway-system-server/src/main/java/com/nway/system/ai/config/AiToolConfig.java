@@ -3,12 +3,14 @@ package com.nway.system.ai.config;
 import com.nway.system.ai.service.AiArgumentValidator;
 import com.nway.system.ai.service.AiAuditService;
 import com.nway.system.ai.service.AiChatFileService;
+import com.nway.system.ai.service.AiExportService;
 import com.nway.system.ai.service.AiInterfaceSearchService;
 import com.nway.system.ai.service.AiInterfaceService;
 import com.nway.system.ai.service.AiInvoker;
 import com.nway.system.ai.service.AiOptionService;
 import com.nway.system.ai.service.AiPermissionService;
 import com.nway.system.ai.service.AiSchemaCompiler;
+import com.nway.system.ai.tool.ExportAnalysisTool;
 import com.nway.system.ai.tool.GetInterfaceConfigTool;
 import com.nway.system.ai.tool.InvokeInterfaceTool;
 import com.nway.system.ai.tool.LookupOptionsTool;
@@ -18,7 +20,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * 工具注册：核心工具 3 个（查询直返、通用调用、接口检索），不创建工具组，不注册 reset_tools。
+ * 工具注册：核心工具 4 个（查询直返、通用调用、接口检索、结果导出），不创建工具组，不注册 reset_tools。
  *
  * @author nway
  */
@@ -74,5 +76,13 @@ public class AiToolConfig {
     @Bean
     public ReadFileTool readFileTool(AiChatFileService chatFileService) {
         return new ReadFileTool(chatFileService);
+    }
+
+    /**
+     * 分析结果导出：由模型按用户导出意图组织内容，服务端生成文件并返回下载信息。
+     */
+    @Bean
+    public ExportAnalysisTool exportAnalysisTool(AiExportService exportService) {
+        return new ExportAnalysisTool(exportService);
     }
 }

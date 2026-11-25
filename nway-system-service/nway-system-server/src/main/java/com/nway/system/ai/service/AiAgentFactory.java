@@ -2,6 +2,7 @@ package com.nway.system.ai.service;
 
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.nway.system.ai.domain.AiUserContext;
+import com.nway.system.ai.tool.ExportAnalysisTool;
 import com.nway.system.ai.tool.GetInterfaceConfigTool;
 import com.nway.system.ai.tool.InvokeInterfaceTool;
 import com.nway.system.ai.tool.LookupOptionsTool;
@@ -33,7 +34,7 @@ import java.util.HexFormat;
  * HarnessAgent 工厂：按「模型 + 系统提示词」缓存 Agent。
  * <p>
  * Agent 本身无会话状态（会话在 Redis），可跨用户复用；提示词变化即换缓存键。
- * 核心工具 3 个：get_interface_config / query_interface（查询直返）/ invoke_interface。
+ * 核心工具 4 个：get_interface_config / query_interface（查询直返）/ invoke_interface / export_analysis。
  *
  * @author nway
  */
@@ -52,6 +53,7 @@ public class AiAgentFactory {
     private final InvokeInterfaceTool invokeInterfaceTool;
     private final LookupOptionsTool lookupOptionsTool;
     private final ReadFileTool readFileTool;
+    private final ExportAnalysisTool exportAnalysisTool;
     private final boolean lookupOptionsEnabled;
     private final boolean readFileEnabled;
     private final Path workspace;
@@ -66,6 +68,7 @@ public class AiAgentFactory {
                           @Qualifier("invokeInterfaceTool") InvokeInterfaceTool invokeInterfaceTool,
                           LookupOptionsTool lookupOptionsTool,
                           ReadFileTool readFileTool,
+                          ExportAnalysisTool exportAnalysisTool,
                           DistributedStore distributedStore,
                           @Value("${nway.ai.tools.lookup-options-enabled:false}") boolean lookupOptionsEnabled,
                           @Value("${nway.ai.tools.read-file-enabled:false}") boolean readFileEnabled,
@@ -77,6 +80,7 @@ public class AiAgentFactory {
         this.invokeInterfaceTool = invokeInterfaceTool;
         this.lookupOptionsTool = lookupOptionsTool;
         this.readFileTool = readFileTool;
+        this.exportAnalysisTool = exportAnalysisTool;
         this.lookupOptionsEnabled = lookupOptionsEnabled;
         this.readFileEnabled = readFileEnabled;
         this.workspace = Path.of(workspaceDir).toAbsolutePath().normalize();
@@ -114,6 +118,14 @@ public class AiAgentFactory {
         return agentCache.get(key, k -> build(prompt, modelEntity));
     }
 
+    /**
+     * 本轮对话模型单次输出上限：与 buildModel 的 maxTokens 取值一致，用于识别回答是否被截断。
+     */
+    public int maxOutputTokens(AiUserContext user, String modelId) {
+        return modelService.effectiveMaxTokens(
+                modelService.getChatModel(user.effectiveTenantCode(), modelId));
+    }
+
     private String optionalToolHint() {
         StringBuilder sb = new StringBuilder();
         if (lookupOptionsEnabled) {
@@ -131,6 +143,7 @@ public class AiAgentFactory {
         toolkit.registerAgentTool(getInterfaceConfigTool);
         toolkit.registerAgentTool(queryInterfaceTool);
         toolkit.registerAgentTool(invokeInterfaceTool);
+        toolkit.registerAgentTool(exportAnalysisTool);
         if (lookupOptionsEnabled) {
             toolkit.registerAgentTool(lookupOptionsTool);
         }

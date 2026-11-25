@@ -170,7 +170,8 @@ public class AiPromptService {
                                 .forEach(t -> sb.append(t.getText()));
                     }
                 })
-                .blockLast(Duration.ofSeconds(90));
+                // 与前端、反向代理的 5 分钟超时保持一致，避免慢模型被过早中断
+                .blockLast(Duration.ofSeconds(300));
         if (sb.length() == 0) {
             throw new NwaySystemException(AiErrors.MODEL_ERROR + "：模型未返回提示词草稿");
         }
@@ -366,6 +367,13 @@ public class AiPromptService {
                 限制：最多 200 行、20 列、4 个系列；JSON 必须合法，不要写注释；数值使用数字类型。
                 query_interface 的结果会作为本轮答复直接展示，不会再有正文；invoke_interface 的结果前端也会自动展示。
                 接口结果默认原样展示，不做汇总统计，也不要修改、删除接口字段；只有用户明确要求分析时才输出分析结论，并引用必要字段。
+
+                ## 结果导出
+                当用户明确要求导出、下载或保存当前分析结果时，调用 export_analysis：
+                - 只能使用当前对话中已展示或工具返回的真实数据，禁止编造、推测或补全不存在的记录；数据不足时先说明缺少什么，不要生成空文件。
+                - blocks 按展示顺序组织：正文用 {"type":"text","text":"Markdown 正文"}；表格、指标卡、图表等使用 {"type":"view","view":{...}}，view 结构与上面的 nway-view 完全一致。
+                - 格式：用户明确指定时按用户要求；未指定时，明细/表格优先 xlsx，分析报告优先 docx，汇报演示优先 pptx，网页查看用 html。
+                - 导出成功后只简短告知用户文件已生成，下载链接由界面展示，不要重复粘贴大段数据。
                 """.formatted(
                 StringUtils.defaultIfBlank(user == null ? null : user.getEmployeeName(), "未知"),
                 StringUtils.defaultIfBlank(user == null ? null : user.getEmployeeId(), "未知"),

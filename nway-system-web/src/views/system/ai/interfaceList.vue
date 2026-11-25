@@ -806,7 +806,7 @@ const modelForm = reactive<any>({
   modelName: '',
   apiKey: '',
   temperature: 0.3,
-  maxTokens: 4096,
+  maxTokens: 8192,
   supportsToolCalling: true,
   visionMode: 'AUTO',
   contextWindowTokens: null,
@@ -1935,7 +1935,7 @@ async function loadModels() {
 function openModelCreate() {
   Object.assign(modelForm, {
     id: '', name: '', baseUrl: '', modelName: '', apiKey: '',
-    temperature: 0.3, maxTokens: 4096, supportsToolCalling: true,
+    temperature: 0.3, maxTokens: 8192, supportsToolCalling: true,
     visionMode: 'AUTO', contextWindowTokens: null, topP: null,
     frequencyPenalty: null, presencePenalty: null, thinkingMode: 'AUTO',
     reasoningEffort: '', thinkingBudget: null, extraBody: '',
@@ -1952,7 +1952,7 @@ function openModelEdit(row: AiModelVo) {
     modelName: row.modelName,
     apiKey: '',
     temperature: row.temperature ?? 0.3,
-    maxTokens: row.maxTokens ?? 4096,
+    maxTokens: row.maxTokens ?? 8192,
     supportsToolCalling: row.supportsToolCalling !== false,
     visionMode: row.supportsVision == null ? 'AUTO' : row.supportsVision ? 'ON' : 'OFF',
     contextWindowTokens: row.contextWindowTokens ?? null,

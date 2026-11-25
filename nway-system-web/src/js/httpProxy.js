@@ -20,7 +20,7 @@ let isRefreshing = false
 let pendingRequests = []
 
 const http = axios.create({
-    timeout: 1000 * 30
+    timeout: 1000 * 60
 })
 
 /**

@@ -19,9 +19,6 @@
             </div>
           </div>
         </div>
-        <div class="chat-header-right">
-          <div class="chat-header-note">AI 生成内容仅供参考</div>
-        </div>
       </header>
 
       <div ref="scrollEl" class="message-scroll" @scroll="trackFollowScroll">
@@ -112,6 +109,9 @@
                 <div v-else-if="segment.type === 'pending'" class="msg-view-pending">正在整理数据…</div>
               </template>
               <div v-if="msg.error" class="msg-error">{{ msg.error }}</div>
+              <div v-if="msg.truncated" class="msg-truncated">
+                回答已达到模型单次输出上限，内容可能不完整。可回复「继续」让模型接着输出。
+              </div>
               <div v-if="msg.streaming" class="typing"><span></span><span></span><span></span></div>
               <div v-else-if="ttsSupported && msg.text" class="msg-actions">
                 <button type="button" class="msg-action" :class="{ active: speakingId === msg.id }"
@@ -181,6 +181,19 @@
                 </div>
                 <el-button link type="primary" :icon="Plus" @click="startNewPrompt">新建</el-button>
               </div>
+              <button type="button" class="prompt-extract" :disabled="!activeId || extracting"
+                      @click="extractFromConversation">
+                <el-icon class="prompt-extract-icon" :class="{ 'is-loading': extracting }">
+                  <Loading v-if="extracting" />
+                  <MagicStick v-else />
+                </el-icon>
+                <span class="prompt-extract-main">
+                  <span class="prompt-extract-title">{{ extracting ? '正在提取提示词…' : '从当前对话提取' }}</span>
+                  <span class="prompt-extract-sub">
+                    {{ activeId ? '根据当前会话归纳可复用提示词' : '当前没有可提取的会话' }}
+                  </span>
+                </span>
+              </button>
               <div class="prompt-panel-list">
                 <div v-for="prompt in prompts" :key="prompt.id" class="prompt-card" @click="usePrompt(prompt)">
                   <div class="prompt-card-head">
@@ -323,6 +336,10 @@
             <button v-if="!streaming" class="send-btn" title="发送" :disabled="!canSend" @click="send">
               <el-icon><Promotion /></el-icon>
             </button>
+            <button v-else-if="!streamCancelable" class="send-btn stop" disabled
+                    title="写操作执行中，请稍候">
+              <el-icon><VideoPause /></el-icon>
+            </button>
             <button v-else class="send-btn stop" title="停止生成" @click="stop">
               <el-icon><VideoPause /></el-icon>
             </button>
@@ -444,9 +461,6 @@
       </el-form>
       <template #footer>
         <div class="prompt-dialog-footer">
-          <el-button :disabled="!activeId" :loading="extracting" @click="extractFromConversation">
-            从当前对话提取
-          </el-button>
           <div class="prompt-dialog-actions">
             <el-button @click="promptDialog = false">取消</el-button>
             <el-button type="primary" :loading="promptSaving" @click="savePersonalPrompt">保存</el-button>
@@ -464,25 +478,26 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowRight, ChatDotRound, Clock, Close, Cpu, Delete, Document, Edit, EditPen, Headset, Hide,
-  MagicStick, Microphone, MoreFilled, Mute, Paperclip, Plus, Promotion, Search, Star, StarFilled,
-  VideoPause, View
+  Loading, MagicStick, Microphone, MoreFilled, Mute, Paperclip, Plus, Promotion, Search, Star,
+  StarFilled, VideoPause, View
 } from '@element-plus/icons-vue'
 import {
-  assetUrl, deleteChatFile, deleteConversation, deletePrompt,
-  extractPrompt, getMessages, listChatModels, listConversations, listPrompts, renameConversation,
-  savePrompt, streamChat, streamConfirm, updatePrompt, uploadChatFile,
-  type AiChatModelVo, type AiConversationVo, type AiFieldDef, type AiFileVo, type AiMessage,
-  type AiPromptVo, type ChatEvent
+  assetUrl, cancelChat, deleteChatFile, deleteConversation, deletePrompt,
+  extractPrompt, getMessages, listChatModels, listConversations, listPrompts, mergeAssistantMessages,
+  renameConversation, savePrompt, streamChat, streamConfirm, updatePrompt, uploadChatFile,
+  type AiChatModelVo, type AiConversationVo, type AiFieldDef, type AiFileVo,
+  type AiMessage, type AiPromptVo, type ChatEvent
 } from '@/api/ai'
 import AiViewBlock from '@/components/ai/AiViewBlock.vue'
 import AiMarkdown from '@/components/ai/AiMarkdown.vue'
 import {
-  buildInvokeView, inputFieldLabel, rememberInterfaceConfig, rememberInterfaceFields,
-  rememberedInterfaceFields, rememberedInterfaceName, splitViewSegments, toolResultText,
-  type AiSegment, type AiView
+  EXPORT_TOOL, buildExportView, buildInvokeView, inputFieldLabel, rememberInterfaceConfig,
+  rememberInterfaceFields, rememberedInterfaceFields, rememberedInterfaceName, splitViewSegments,
+  toolResultText, type AiSegment, type AiView
 } from '@/utils/aiView'
 import { renderMarkdown } from '@/utils/markdown'
 import { followBottom, followLast, trackFollowScroll } from '@/utils/scrollFollow'
+import { createSpeechStream, speak, stopSpeak, toSpeakableText, ttsSupported, type SpeechStream } from '@/utils/tts'
 import { useAiChatHandoffStore } from '@/stores/aiChatStore'
 
 interface UploadItem extends AiFileVo {
@@ -510,6 +525,8 @@ interface UiMessage {
   attachments?: AiFileVo[]
   streaming?: boolean
   error?: string
+  /** 模型因单次输出上限被截断，正文可能不完整 */
+  truncated?: boolean
 }
 
 interface ConfirmForm {
@@ -606,6 +623,8 @@ const messages = ref<UiMessage[]>([])
 const input = ref('')
 const attachments = ref<UploadItem[]>([])
 const streaming = ref(false)
+/** 当前流是否允许停止：写操作确认后的执行流不允许打断，避免业务调用执行到一半被取消 */
+const streamCancelable = ref(true)
 const thinkingOpen = ref(new Set<string>())
 /** 工具结果默认展开，点击标题收起 */
 const toolCollapsed = ref(new Set<string>())
@@ -756,10 +775,10 @@ function toHandoffMessage(raw: any): UiMessage {
           ? 'interrupted'
           : 'done',
       result: tool.result,
-      // 无结果时保留面板的兜底说明，避免同一条消息在两处显示不同文案；有结果则按接口元数据重新渲染
-      view: tool.result && isResultTool(tool.name || INVOKE_TOOL)
-        ? buildInvokeView(tool.result)
-        : tool.result ? null : tool.view || null
+      // 无结果时保留面板的兜底说明；有结果则按工具类型重新渲染（导出为文件卡片，接口按出参结构）
+      view: tool.result
+        ? buildToolView(tool.name || INVOKE_TOOL, tool.result) || tool.view || null
+        : tool.view || null
     })),
     // 按已结束状态重新分段，避免把面板流式中的占位段带过来
     segments: splitViewSegments(raw.text || '', false),
@@ -782,7 +801,7 @@ async function openConversation(conv: AiConversationVo) {
   messages.value = []
   try {
     const res = await getMessages(conv.id)
-    const list = (res.data || []).map(toUiMessage)
+    const list = mergeAssistantMessages(res.data || []).map(toUiMessage)
     restoreHistoryTools(list)
     messages.value = list
     scrollToBottom(true)
@@ -824,7 +843,7 @@ function toUiMessage(message: AiMessage): UiMessage {
           ? 'error'
           : block.result || block.state ? 'done' : 'interrupted',
         result: block.result,
-        view: isResultTool(toolName) ? buildInvokeView(block.result) : null
+        view: buildToolView(toolName, block.result)
       })
     }
   })
@@ -836,12 +855,13 @@ function toUiMessage(message: AiMessage): UiMessage {
 /**
  * 确认执行的写操作，工具结果可能没回填到历史消息里（只有 tool_use 没有 result）。
  * 该轮之后还有助手正文，说明这次调用已经执行完成，不能因为缺少结果就显示未完成。
+ * 相邻助手消息已按一次提问合并，后续正文可能与本条工具调用在同一消息内。
  */
 function restoreHistoryTools(list: UiMessage[]) {
   list.forEach((message, index) => {
     if (!message.tools.some((tool) => tool.status === 'interrupted')) return
-    let completed = false
-    for (let i = index + 1; i < list.length; i += 1) {
+    let completed = !!message.text.trim()
+    for (let i = index + 1; !completed && i < list.length; i += 1) {
       const next = list[i]
       if (next.role === 'user') break
       if (next.text.trim()) {
@@ -981,16 +1001,28 @@ async function send() {
   )
 }
 
+/** 收到这些事件说明本轮已正常收尾，后端会自行结束事件流并释放会话写入权 */
+const SETTLED_EVENT_TYPES = new Set(['reply.end', 'error', 'confirm.required'])
+
 async function runStream(
   starter: (onEvent: (event: ChatEvent) => void, signal: AbortSignal) => Promise<void>,
-  target: UiMessage
+  target: UiMessage,
+  options: { cancelable?: boolean } = {}
 ) {
+  const cancelable = options.cancelable !== false
   streaming.value = true
+  streamCancelable.value = cancelable
   target.streaming = true
   stopSpeaking()
   abortController = new AbortController()
+  let replyId = ''
+  let settled = false
   try {
-    await starter((event) => handleEvent(event, target), abortController.signal)
+    await starter((event) => {
+      if (event.type === 'reply.start' && event.replyId) replyId = event.replyId
+      if (SETTLED_EVENT_TYPES.has(event.type)) settled = true
+      handleEvent(event, target)
+    }, abortController.signal)
   } catch (error: any) {
     if (error?.name === 'AbortError') {
       target.streaming = false
@@ -1000,10 +1032,19 @@ async function runStream(
     } else {
       target.error = error?.message || '请求失败，请稍后重试'
     }
+    // 用户停止、空闲超时或连接中断时，后端不一定能感知客户端已断开，
+    // 主动结束本轮，避免遗留任务占着会话写入权导致下一条消息排队或报 active writer。
+    // 写操作执行流不可取消：让后端把业务调用执行完，结果以历史记录为准
+    if (cancelable && !settled && replyId && activeId.value) {
+      cancelChat({ conversationId: activeId.value, replyId }).catch(() => {})
+    }
   } finally {
     target.streaming = false
     syncSegments(target)
+    // 没有收到 reply.end / confirm.required 就结束的流，不再继续播报
+    if (speechTarget === target && !speechEnded) cancelAutoSpeech(target)
     streaming.value = false
+    streamCancelable.value = true
     abortController = null
     scrollToBottom()
     loadHistory()
@@ -1032,14 +1073,21 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
       break
     case 'reply.start':
       if (event.replyId) target.id = event.replyId
+      startAutoSpeech(target)
       break
     case 'thinking.delta':
       target.thinking += event.delta || ''
       followStreamTail('.thinking-text')
       break
-    case 'message.delta':
+    case 'message.delta': {
       target.text += event.delta || ''
       syncSegments(target)
+      if (speechTarget === target) speechStream?.push(event.delta || '')
+      break
+    }
+    case 'message.end':
+      // 文本块结束（可能后续还有工具调用）时把未闭合的句子先读完
+      if (speechTarget === target) speechStream?.push('\n')
       break
     case 'tool.call.start': {
       if (event.name === CONFIG_TOOL) break
@@ -1072,7 +1120,7 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
       const tool = findTool(event.toolCallId)
       if (tool) {
         tool.status = event.state === 'ERROR' || event.state === 'DENIED' ? 'error' : 'done'
-        if (isResultTool(tool.name)) tool.view = buildInvokeView(tool.result)
+        tool.view = buildToolView(tool.name, tool.result)
       }
       break
     }
@@ -1084,17 +1132,26 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
       break
     case 'confirm.required':
       target.streaming = false
+      // 本轮输出暂停，先把已到达的内容读完，用户确认后再为新回复建立会话
+      finishAutoSpeech(target)
       openConfirm(event)
       break
     case 'reply.end':
       target.streaming = false
       syncSegments(target)
-      if (autoSpeak.value) speakMessage(target)
+      // 模型因单次输出上限结束时没有异常，只能靠结束原因识别
+      if (event.truncated || /length|max_token/i.test(String(event.finishReason || ''))) {
+        target.truncated = true
+      }
+      if (speechTarget === target) finishAutoSpeech(target)
+      // 生成中途才打开自动播报（或未收到 reply.start）时，用完整正文补播一次
+      else if (autoSpeak.value && ttsSupported && !target.error) speakMessage(target)
       break
     case 'error':
       target.error = event.message || 'AI 服务异常'
       target.streaming = false
       syncSegments(target)
+      cancelAutoSpeech(target)
       break
     default:
       break
@@ -1103,8 +1160,11 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
 }
 
 function stop() {
+  // 写操作执行流不允许打断，按钮此时也是禁用状态
+  if (!streamCancelable.value) return
   abortController?.abort()
   streaming.value = false
+  stopSpeaking()
   // 停止后不再收到工具结果事件，把执行中的调用标记为未完成
   messages.value.forEach((message) => {
     message.tools?.forEach((tool) => {
@@ -1150,7 +1210,6 @@ type SpeechRecognitionCtor = new () => SpeechRecognitionLike
 const SpeechRecognitionClass: SpeechRecognitionCtor | null =
   (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition || null
 const speechRecognitionSupported = !!SpeechRecognitionClass
-const ttsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window
 
 const VOICE_ERRORS: Record<string, string> = {
   'not-allowed': '麦克风权限被拒绝，请在浏览器设置中允许后重试',
@@ -1160,7 +1219,6 @@ const VOICE_ERRORS: Record<string, string> = {
 }
 
 const AUTO_SPEAK_KEY = 'nway-ai-auto-speak'
-const MAX_SPEECH_CHUNK = 160
 
 const voiceActive = ref(false)
 const speakingId = ref<string | null>(null)
@@ -1169,7 +1227,6 @@ const autoSpeak = ref(readAutoSpeak())
 let recognition: SpeechRecognitionLike | null = null
 let voiceBaseText = ''
 let voiceManualStop = false
-let speechToken = 0
 
 const voiceTitle = computed(() => {
   if (!speechRecognitionSupported) return '当前浏览器不支持语音输入，建议使用 Chrome 或 Edge'
@@ -1198,6 +1255,51 @@ function toggleAutoSpeak() {
     // 本地存储不可用时仅在当前会话生效
   }
   if (!autoSpeak.value) stopSpeaking()
+}
+
+/** 当前自动播报的流式会话，同一时间只播报一条回复 */
+let speechStream: SpeechStream | null = null
+let speechTarget: UiMessage | null = null
+/** 已收到本轮输出结束信号，队列剩余内容读完后自然收尾 */
+let speechEnded = false
+
+/** 在 reply.start 时建立会话，后续 message.delta 直接追加到同一次播报 */
+function startAutoSpeech(message: UiMessage) {
+  if (!ttsSupported || !autoSpeak.value) return
+  cancelAutoSpeech()
+  speechTarget = message
+  speechEnded = false
+  speakingId.value = message.id
+  speechStream = createSpeechStream({
+    onEnd: () => clearAutoSpeech(message),
+    onError: () => clearAutoSpeech(message)
+  })
+}
+
+/** 本轮输出结束：把剩余文本补读完，不打断正在播报的队列 */
+function finishAutoSpeech(message: UiMessage) {
+  if (speechTarget !== message) return
+  speechEnded = true
+  speechStream?.end()
+}
+
+/** 立即停止自动播报；传 message 时只处理绑定在该消息上的会话 */
+function cancelAutoSpeech(message?: UiMessage) {
+  if (message && speechTarget !== message) return
+  const stream = speechStream
+  speechStream = null
+  speechTarget = null
+  speechEnded = false
+  stream?.cancel()
+  if (!message || speakingId.value === message.id) speakingId.value = null
+}
+
+function clearAutoSpeech(message: UiMessage) {
+  if (speechTarget !== message) return
+  speechStream = null
+  speechTarget = null
+  speechEnded = false
+  if (speakingId.value === message.id) speakingId.value = null
 }
 
 function toggleVoice() {
@@ -1284,88 +1386,18 @@ function speakMessage(message: UiMessage) {
   const text = toSpeakableText(message.text)
   if (!text) return
   stopSpeaking()
-  const token = ++speechToken
-  speakingId.value = message.id
-  const chunks = splitForSpeech(text)
-  // cancel 后立即 speak 在部分浏览器会被忽略，延后一帧再入队
-  window.setTimeout(() => {
-    if (token !== speechToken) return
-    const voice = pickChineseVoice()
-    chunks.forEach((chunk, index) => {
-      const utterance = new SpeechSynthesisUtterance(chunk)
-      if (voice) utterance.voice = voice
-      utterance.lang = voice?.lang || 'zh-CN'
-      utterance.rate = 1
-      if (index === chunks.length - 1) {
-        utterance.onend = () => {
-          if (token === speechToken) speakingId.value = null
-        }
-      }
-      utterance.onerror = () => {
-        if (token === speechToken) speakingId.value = null
-      }
-      window.speechSynthesis.speak(utterance)
-    })
-  }, 0)
+  const id = message.id
+  speakingId.value = id
+  const clear = () => {
+    if (speakingId.value === id) speakingId.value = null
+  }
+  speak(text, { onEnd: clear, onError: clear })
 }
 
 function stopSpeaking() {
-  speechToken += 1
+  cancelAutoSpeech()
   speakingId.value = null
-  if (ttsSupported) window.speechSynthesis.cancel()
-}
-
-function pickChineseVoice(): SpeechSynthesisVoice | null {
-  const voices = window.speechSynthesis.getVoices()
-  return voices.find((voice) => /^zh[-_]cn/i.test(voice.lang))
-    || voices.find((voice) => /^zh/i.test(voice.lang))
-    || null
-}
-
-/** 播报前去掉 Markdown 标记、代码块、链接地址与表格，只保留自然语言。 */
-function toSpeakableText(markdown: string): string {
-  return markdown
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/~~~[\s\S]*?~~~/g, ' ')
-    .replace(/!\[[^\]]*]\([^)]*\)/g, ' ')
-    .replace(/\[([^\]]*)]\([^)]*\)/g, '$1')
-    .replace(/^\s*\|.*\|\s*$/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*\d+\.\s+/gm, '')
-    .replace(/^\s*#{1,6}\s*/gm, '')
-    .replace(/^\s*>\s?/gm, '')
-    .replace(/^\s*([-*_])\1{2,}\s*$/gm, '')
-    .replace(/[*_~`]/g, '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\n{2,}/g, '\n')
-    .trim()
-}
-
-/** 长回复按句子切成小段依次播报，避免部分浏览器截断超长文本。 */
-function splitForSpeech(text: string): string[] {
-  const sentences = text.match(/[^。！？!?；;\n]+[。！？!?；;\n]?/g) || [text]
-  const chunks: string[] = []
-  let current = ''
-  sentences.forEach((sentence) => {
-    const piece = sentence.trim()
-    if (!piece) return
-    if (current && current.length + piece.length > MAX_SPEECH_CHUNK) {
-      chunks.push(current)
-      current = ''
-    }
-    if (piece.length <= MAX_SPEECH_CHUNK) {
-      current += piece
-      return
-    }
-    for (let i = 0; i < piece.length; i += MAX_SPEECH_CHUNK) {
-      const slice = piece.slice(i, i + MAX_SPEECH_CHUNK)
-      if (slice.length === MAX_SPEECH_CHUNK) chunks.push(slice)
-      else current = slice
-    }
-  })
-  if (current) chunks.push(current)
-  return chunks
+  stopSpeak()
 }
 
 onBeforeUnmount(() => {
@@ -1486,7 +1518,8 @@ async function submitConfirm(confirmed: boolean) {
       decisions,
       modelId: selectedModelId.value || undefined
     }, onEvent, signal),
-    assistant
+    assistant,
+    { cancelable: false }
   )
   if (!confirmed && !assistant.text && !assistant.error) {
     assistant.text = '已取消本次操作。'
@@ -1715,13 +1748,6 @@ async function seedPromptEditor() {
   editor.innerHTML = promptForm.content ? renderMarkdown(promptForm.content) : ''
 }
 
-/** 外部写入内容（如从对话提取）后强制重建编辑区。 */
-function reseedPromptEditor() {
-  const editor = promptEditorEl.value
-  if (!editor) return
-  editor.innerHTML = promptForm.content ? renderMarkdown(promptForm.content) : ''
-}
-
 function syncPromptContent() {
   const editor = promptEditorEl.value
   if (!editor) return
@@ -1941,8 +1967,10 @@ async function removePrompt(prompt: AiPromptVo) {
   }
 }
 
+/** 从当前对话提取提示词草稿：完成后打开编辑弹窗，便于调整后保存。 */
 async function extractFromConversation() {
-  if (!activeId.value) return
+  if (!activeId.value || extracting.value) return
+  resetPromptForm()
   extracting.value = true
   try {
     const res = await extractPrompt({
@@ -1953,8 +1981,8 @@ async function extractFromConversation() {
     const draft = res.data || res
     promptForm.name = promptForm.name || draft.name || '对话提取'
     promptForm.content = draft.content || ''
-    await nextTick()
-    reseedPromptEditor()
+    promptPopover.value = false
+    promptDialog.value = true
     ElMessage.success('已生成草稿，可编辑后保存')
   } catch (e) {
     // 已提示
@@ -1988,7 +2016,14 @@ function toolLabel(name?: string) {
   if (name === CONFIG_TOOL) return '查询接口配置'
   if (name === QUERY_TOOL) return '查询结果'
   if (name === INVOKE_TOOL) return '调用业务接口'
+  if (name === EXPORT_TOOL) return '导出分析结果'
   return name || '工具调用'
+}
+
+/** 工具结果视图：导出工具渲染为下载文件卡片，接口调用按出参结构渲染。 */
+function buildToolView(name?: string, result?: string): AiView | null {
+  if (name === EXPORT_TOOL) return buildExportView(result)
+  return isResultTool(name) ? buildInvokeView(result) : null
 }
 
 function isResultTool(name?: string) {
@@ -2263,24 +2298,6 @@ function followStreamTail(selector: string) {
   box-shadow: 0 0 0 3px rgba(47, 194, 110, 0.12);
 }
 
-.chat-header-note {
-  flex: 0 0 auto;
-  padding: 4px 10px;
-  border: 1px solid #e8edf6;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  color: #98a1b3;
-  font-size: 11.5px;
-  white-space: nowrap;
-}
-
-.chat-header-right {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
 .message-scroll {
   flex: 1;
   display: flex;
@@ -2399,7 +2416,6 @@ function followStreamTail(selector: string) {
 
 /* 用户与助手消息占满同一内容宽度 */
 .message.user .bubble {
-  width: 100%;
   max-width: 100%;
 }
 
@@ -2901,6 +2917,17 @@ function followStreamTail(selector: string) {
   font-size: 13px;
 }
 
+.msg-truncated {
+  margin-top: 10px;
+  padding: 7px 12px;
+  border: 1px solid #f7e2b7;
+  border-radius: 10px;
+  background: #fffaf0;
+  color: #a8730a;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
 .msg-actions {
   display: flex;
   gap: 8px;
@@ -3332,6 +3359,14 @@ function followStreamTail(selector: string) {
   transform: none;
 }
 
+.send-btn.stop:disabled,
+.send-btn.stop:disabled:hover {
+  background: #f0f2f6;
+  color: #b3bac7;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .composer-hint {
   max-width: var(--chat-content-width);
   margin: 10px auto 0;
@@ -3480,6 +3515,57 @@ function followStreamTail(selector: string) {
   margin-top: 2px;
   color: #a4adbe;
   font-size: 11px;
+}
+
+.prompt-extract {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px dashed rgba(99, 91, 255, 0.35);
+  border-radius: 12px;
+  background: rgba(99, 91, 255, 0.05);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.prompt-extract:hover:not(:disabled) {
+  border-color: rgba(99, 91, 255, 0.55);
+  background: rgba(99, 91, 255, 0.09);
+  box-shadow: 0 6px 16px -12px rgba(91, 92, 255, 0.4);
+}
+
+.prompt-extract:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.prompt-extract-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+  color: #635bff;
+}
+
+.prompt-extract-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.prompt-extract-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f3542;
+}
+
+.prompt-extract-sub {
+  font-size: 11px;
+  color: #a4adbe;
 }
 
 .prompt-panel-list {
@@ -3655,7 +3741,7 @@ function followStreamTail(selector: string) {
 .prompt-dialog-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
 }
 
 .prompt-dialog-actions {
@@ -3722,10 +3808,6 @@ function followStreamTail(selector: string) {
     height: 58px;
     flex-basis: 58px;
     padding: 0 16px;
-  }
-
-  .chat-header-note {
-    display: none;
   }
 
   .composer {

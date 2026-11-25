@@ -6,11 +6,13 @@ import com.nway.system.ai.web.model.AiConversationVo;
 import com.nway.system.ai.web.model.AiFileVo;
 import com.nway.system.ai.web.model.AiMessageVo;
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import com.nway.system.ai.domain.AiPageContext;
 import com.nway.system.ai.domain.AiUserContext;
 import com.nway.system.common.exception.NwaySystemException;
 import com.nway.system.common.tenant.TenantUtil;
 import com.nway.system.ai.entity.AiConversation;
+import com.nway.system.ai.tool.ExportAnalysisTool;
 import com.nway.system.ai.tool.QueryInterfaceTool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEndEvent;
@@ -42,7 +44,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.util.retry.Retry;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -50,7 +54,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -64,6 +70,10 @@ import java.util.regex.Pattern;
 public class AiChatService {
 
     private static final int MAX_TRANSCRIPT_CHARS = 12_000;
+
+    /** 上一轮被取消后 SDK 释放会话写入权是异步的，新一轮拿锁失败时在该窗口内短暂重试。 */
+    private static final int WRITER_BUSY_RETRY_TIMES = 10;
+    private static final Duration WRITER_BUSY_RETRY_DELAY = Duration.ofMillis(300);
 
     /** 页面上下文标记：写入模型输入，历史展示时据此过滤，避免大段页面文本出现在聊天气泡 */
     private static final String PAGE_CONTEXT_MARKER = "【当前页面上下文】";
@@ -85,15 +95,17 @@ public class AiChatService {
     private final AiConversationService conversationService;
     private final AiChatFileService fileService;
     private final AiMessageService messageService;
+    private final AiExportService exportService;
 
     public AiChatService(AiAgentFactory agentFactory, AiPromptService promptService,
                          AiConversationService conversationService, AiChatFileService fileService,
-                         AiMessageService messageService) {
+                         AiMessageService messageService, AiExportService exportService) {
         this.agentFactory = agentFactory;
         this.promptService = promptService;
         this.conversationService = conversationService;
         this.fileService = fileService;
         this.messageService = messageService;
+        this.exportService = exportService;
     }
 
     public AiConversation prepare(AiUserContext user, AiChatRequest request) {
@@ -107,7 +119,12 @@ public class AiChatService {
         return conversation;
     }
 
-    public record ChatStream(AiConversation conversation, Flux<AgentEvent> events) {
+    /**
+     * 一轮对话的事件流。lengthLimited 在收到 AGENT_END 时回填：
+     * 最后一次模型调用的输出量达到单次上限，说明回答被截断而不是正常结束。
+     */
+    public record ChatStream(AiConversation conversation, Flux<AgentEvent> events,
+                             AtomicBoolean lengthLimited) {
     }
 
     public ChatStream stream(AiUserContext user, AiChatRequest request) {
@@ -143,8 +160,11 @@ public class AiChatService {
                 StringUtils.length(request.getMessage()),
                 StringUtils.length(pageContext),
                 request.getFileIds() == null ? 0 : request.getFileIds().size());
-        Flux<AgentEvent> events = instrument(agent.streamEvents(msg, context), user, conversation, "chat");
-        return new ChatStream(conversation, events);
+        AtomicBoolean lengthLimited = new AtomicBoolean(false);
+        Flux<AgentEvent> events = instrument(retryWhenSessionBusy(() -> agent.streamEvents(msg, context)),
+                user, conversation, "chat",
+                agentFactory.maxOutputTokens(user, request.getModelId()), lengthLimited);
+        return new ChatStream(conversation, events, lengthLimited);
     }
 
     /**
@@ -217,21 +237,60 @@ public class AiChatService {
                 results.size() - confirmed);
 
         HarnessAgent agent = agent(user, request.getModelId());
-        Flux<AgentEvent> events = instrument(agent.streamEvents(msg, runtimeContext(user, conversation)),
-                user, conversation, "confirm");
-        return new ChatStream(conversation, events);
+        AtomicBoolean lengthLimited = new AtomicBoolean(false);
+        Flux<AgentEvent> events = instrument(retryWhenSessionBusy(
+                        () -> agent.streamEvents(msg, runtimeContext(user, conversation))),
+                user, conversation, "confirm",
+                agentFactory.maxOutputTokens(user, request.getModelId()), lengthLimited);
+        return new ChatStream(conversation, events, lengthLimited);
+    }
+
+    /**
+     * 上一轮对话被取消后，SDK 释放会话写入权是异步的：紧接着的新一轮可能先拿到执行权、
+     * 再在获取写锁时抛 “Session already has an active writer”。这类失败发生在任何模型输出
+     * 之前，短暂重试即可跨过这个窗口，不必把错误抛给用户。
+     */
+    private Flux<AgentEvent> retryWhenSessionBusy(Supplier<Flux<AgentEvent>> stream) {
+        return Flux.defer(() -> {
+            AtomicBoolean outputStarted = new AtomicBoolean(false);
+            return stream.get()
+                    .doOnNext(event -> {
+                        if (!(event instanceof AgentStartEvent)) {
+                            outputStarted.set(true);
+                        }
+                    })
+                    .retryWhen(Retry.fixedDelay(WRITER_BUSY_RETRY_TIMES, WRITER_BUSY_RETRY_DELAY)
+                            .filter(error -> !outputStarted.get() && isSessionBusy(error)));
+        });
+    }
+
+    private boolean isSessionBusy(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause.getMessage() != null && cause.getMessage().contains("active writer")) {
+                return true;
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+        }
+        return false;
     }
 
     /**
      * 给 Agent 事件流挂上诊断日志：关键事件、异常与本轮耗时，便于排查对话卡住或工具调用失败。
      */
     private Flux<AgentEvent> instrument(Flux<AgentEvent> events, AiUserContext user,
-                                        AiConversation conversation, String scene) {
+                                        AiConversation conversation, String scene,
+                                        int maxOutputTokens, AtomicBoolean lengthLimited) {
         long start = System.currentTimeMillis();
         AtomicInteger modelCalls = new AtomicInteger();
         AtomicInteger toolCalls = new AtomicInteger();
+        AtomicInteger lastOutputTokens = new AtomicInteger(-1);
         return events
-                .doOnNext(event -> logEvent(event, conversation, modelCalls, toolCalls))
+                .doOnNext(event -> {
+                    logEvent(event, conversation, modelCalls, toolCalls);
+                    markLengthLimited(event, conversation, maxOutputTokens, lastOutputTokens, lengthLimited);
+                })
                 .doOnComplete(() -> conversationService.touch(conversation.getId(), user))
                 .doOnError(error -> log.error("AI 对话失败 scene={} conversationId={} employeeId={} elapsed={}ms",
                         scene, conversation.getId(), user.getEmployeeId(),
@@ -244,6 +303,36 @@ public class AiChatService {
                             modelCalls.get(), toolCalls.get());
                     persistMessages(user, conversation);
                 });
+    }
+
+    /**
+     * 模型因 max_tokens 结束时 finish_reason=length，SDK 不会抛错，前端也拿不到结束原因。
+     * 这里用最后一次模型调用的输出量与单次上限比较，作为截断的兜底判定。
+     */
+    private void markLengthLimited(AgentEvent event, AiConversation conversation, int maxOutputTokens,
+                                   AtomicInteger lastOutputTokens, AtomicBoolean lengthLimited) {
+        if (event == null || event.getType() == null) {
+            return;
+        }
+        switch (event.getType()) {
+            case MODEL_CALL_END -> {
+                ChatUsage usage = ((ModelCallEndEvent) event).getUsage();
+                Object outputTokens = usage == null ? null : usage.getOutputTokens();
+                if (outputTokens instanceof Number number) {
+                    lastOutputTokens.set(number.intValue());
+                }
+            }
+            case AGENT_END -> {
+                int output = lastOutputTokens.get();
+                if (maxOutputTokens > 0 && output >= maxOutputTokens) {
+                    lengthLimited.set(true);
+                    log.warn("回答达到单次输出上限，可能被截断 conversationId={} outputTokens={} maxTokens={}",
+                            conversation.getId(), output, maxOutputTokens);
+                }
+            }
+            default -> {
+            }
+        }
     }
 
     private void logEvent(AgentEvent event, AiConversation conversation,
@@ -326,8 +415,56 @@ public class AiChatService {
         }
         for (AiMessageVo message : messages) {
             restoreAttachments(message, user);
+            restoreExportLinks(message, user);
         }
         return messages;
+    }
+
+    /**
+     * 导出工具的结果里带短时下载票据，历史消息读取时按 fileId 重新签发，避免旧链接过期。
+     */
+    private void restoreExportLinks(AiMessageVo message, AiUserContext user) {
+        List<Map<String, Object>> blocks = message.getBlocks();
+        if (blocks == null || blocks.isEmpty()) {
+            return;
+        }
+        String tenant = user == null ? null : user.effectiveTenantCode();
+        Runnable action = () -> refreshExportBlocks(message, blocks);
+        if (StringUtils.isBlank(tenant)) {
+            action.run();
+        } else {
+            TenantUtil.runAsTenant(tenant, action);
+        }
+    }
+
+    private void refreshExportBlocks(AiMessageVo message, List<Map<String, Object>> blocks) {
+        for (Map<String, Object> block : blocks) {
+            if (!"tool_use".equals(block.get("type"))
+                    || !ExportAnalysisTool.NAME.equals(block.get("name"))) {
+                continue;
+            }
+            Object raw = block.get("result");
+            if (!(raw instanceof String result) || StringUtils.isBlank(result)) {
+                continue;
+            }
+            try {
+                JSONObject json = JSON.parseObject(result);
+                if (json == null || StringUtils.isBlank(json.getString("fileId"))) {
+                    continue;
+                }
+                String url = exportService.downloadUrl(json.getString("fileId"));
+                if (url == null) {
+                    json.remove("url");
+                    json.put("error", "FILE_EXPIRED");
+                    json.put("message", "导出文件已过期或已被清理，请重新导出");
+                } else {
+                    json.put("url", url);
+                }
+                block.put("result", json.toJSONString());
+            } catch (Exception e) {
+                log.debug("导出文件下载地址刷新失败 messageId={} error={}", message.getId(), e.getMessage());
+            }
+        }
     }
 
     /**
