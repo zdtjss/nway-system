@@ -11,3 +11,4 @@ nway-system-service/nway-system-server/target/
 data/
 logs/
 scripts/mock-business-api/__pycache__/
+nway-system-web/dist/
