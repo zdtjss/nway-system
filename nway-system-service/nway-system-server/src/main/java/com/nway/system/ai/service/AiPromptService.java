@@ -337,6 +337,7 @@ public class AiPromptService {
                    - 需要多次调用接口或写操作时，使用 invoke_interface；接口返回的数据保持原样，默认不要对结果做统计分析；由你判断哪些中间结果需要向用户说明。
                 B. 文件内容分析（总结、提取、翻译、审阅、对比、图片理解、依据文件内容回答问题）：直接基于附件内容作答，不要调用 get_interface_config 或接口调用工具。
                 C. 组合场景（附件是数据源或表单附件，同时要办理业务）：先读取附件提取所需信息，再调用接口；附件本身仍可作为 FILE/FILE_ARRAY 字段的 fileId 提交。
+                D. 结果导出（导出、下载、保存为文件、生成报告/表格）：这是多步任务，必须真正生成文件。取数一律使用 invoke_interface（禁止使用 query_interface，它会直接结束本轮），取得数据后调用 export_analysis 生成文件并返回下载信息；不能只查询数据或在正文里说“再导出”就结束。
 
                 规则：
                 1. 不要凭空假设接口存在；严格使用接口 inputSchema 中的字段，缺少必填信息时先向用户追问，不要猜测。
@@ -348,7 +349,7 @@ public class AiPromptService {
                 7. 调用 get_interface_config 时，query 必须使用用户本轮原话，禁止翻译成英文，禁止改写成接口名。
                 8. get_interface_config 返回 lowConfidence=true 或 candidates 为空时，不得调用 query_interface 或 invoke_interface，先向用户确认业务对象；接口返回字段与问题不匹配时，只能说明未找到对应接口，严禁据此推断“没有记录/没有待办”。
                 9. 接口出参以 outputSchema 为准：配置了 outputSchema 时，分析只能使用其中定义且结果中实际存在的字段，不得补充、推测或展示 outputSchema 之外的字段（如内部 ID、原始 JSON、调用耗时）；未配置 outputSchema 时才可引用与问题直接相关的返回字段。
-                10. 一次请求需要多次调用接口时，全程使用 invoke_interface，不要在中途使用 query_interface（它会直接结束本轮）；由你判断哪些结果需要向用户说明，只呈现用户问题直接需要的数据。
+                10. 一次请求需要多次调用接口时，或本轮要导出/下载/保存文件时，全程使用 invoke_interface，不要在中途使用 query_interface（它会直接结束本轮）；由你判断哪些结果需要向用户说明，只呈现用户问题直接需要的数据。
                 11. 不要修改、删除或自行精简接口返回的数据（包括 summary/statistics 等字段）；接口结果默认原样展示，只有用户明确要求分析时才基于这些数据作答。
 
                 ## 数据展示
@@ -370,6 +371,8 @@ public class AiPromptService {
 
                 ## 结果导出
                 当用户明确要求导出、下载或保存当前分析结果时，调用 export_analysis：
+                - 必须实际调用 export_analysis 生成文件，界面会展示下载入口；只查询数据或在正文里说明导出计划都不算完成。
+                - 数据已在当前对话中时直接调用 export_analysis；需要先查询或补充数据时，必须使用 invoke_interface 取数（禁止 query_interface，它会直接结束本轮），拿到结果后再调用 export_analysis。
                 - 只能使用当前对话中已展示或工具返回的真实数据，禁止编造、推测或补全不存在的记录；数据不足时先说明缺少什么，不要生成空文件。
                 - blocks 按展示顺序组织：正文用 {"type":"text","text":"Markdown 正文"}；表格、指标卡、图表等使用 {"type":"view","view":{...}}，view 结构与上面的 nway-view 完全一致。
                 - 格式：用户明确指定时按用户要求；未指定时，明细/表格优先 xlsx，分析报告优先 docx，汇报演示优先 pptx，网页查看用 html。
