@@ -29,7 +29,7 @@
     "pinyin-pro": "^3.29.5",
     "vue": "^3.5.38",
     "vue-router": "^5.5.1",
-    "wujie-vue3": "^2.1.0"
+    "wujie-vue3": "^2.1.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
