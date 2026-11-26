@@ -30,6 +30,27 @@ function readOpenTabs() {
   }
 }
 
+/**
+ * 清除地址栏中指定 wujie 实例的路由同步参数。
+ *
+ * wujie 的 sync 会把子应用当前路由写成宿主地址栏的 query（?<appName>=<子应用路由>），
+ * 新建沙箱时再据此恢复子应用路由。实例已销毁后该快照不再有意义，但 wujie 的 destroy
+ * 先移出实例表再 unmount，内部 clearInactiveAppUrl 对已销毁实例直接跳过，参数会残留在地址栏；
+ * 重新打开同一菜单时 syncUrlToIframe 又会用它覆盖菜单 URL 的 hash（表现为回到关闭前的子应用页面）。
+ * 这里在销毁页签后补一次清理：只删本实例的 key，保留其它 query 与 hash。
+ */
+function clearWujieSyncParam(name) {
+  if (!name) return
+  try {
+    const url = new URL(window.location.href)
+    if (!url.searchParams.has(name)) return
+    url.searchParams.delete(name)
+    window.history.replaceState(window.history.state, '', url.href)
+  } catch (e) {
+    console.warn('清理子应用路由同步参数失败', e)
+  }
+}
+
 export const useCurrentPageStore = defineStore('currentPage', {
   state: () => {
     const snap = readOpenTabs()
@@ -153,6 +174,9 @@ export const useCurrentPageStore = defineStore('currentPage', {
           if (app.renderType.indexOf("wujie") !== -1) {
             // wujie：destroyApp 彻底销毁 iframe + shadowRoot + wujie 实例 + 所有缓存
             destroyAppWujie(app.name)
+            // 实例销毁后其路由同步参数立即失效，必须清掉，
+            // 否则重开同一菜单时会被旧路由覆盖（如提交成功后子应用内部跳转的页面）
+            clearWujieSyncParam(app.name)
           } else if (app.renderType.indexOf("microApp") !== -1) {
             // 延迟到 Vue 完成 v-if 卸载后再销毁，避免与 Vue 对同一 DOM 节点的移除竞争。
             // setTimeout(0) 为宏任务，晚于 Vue 的微任务刷新，此时 <micro-app> 已被移除并触发
