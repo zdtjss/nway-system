@@ -437,9 +437,21 @@ function onIconClick() {
     }
 }
 
+// 以更近的一侧作为锚点换算新视口下的坐标：窗口缩放（最大化/还原、拖拽边框）时
+// 图标跟随所靠边缘移动，而不是停留在原来的绝对像素位置
+function anchorPos(p, from, to) {
+    const rightOffset = from.w - p.left - ICON_SIZE
+    const bottomOffset = from.h - p.top - ICON_SIZE
+    return {
+        left: rightOffset < p.left ? to.w - ICON_SIZE - rightOffset : p.left,
+        top: bottomOffset < p.top ? to.h - ICON_SIZE - bottomOffset : p.top
+    }
+}
+
 function onResize() {
+    const prev = viewport.value
     viewport.value = { w: window.innerWidth, h: window.innerHeight }
-    pos.value = clampPos(pos.value)
+    pos.value = clampPos(anchorPos(pos.value, prev, viewport.value))
     if (mode.value === 'ai') updateAiPlacement()
 }
 
@@ -749,7 +761,6 @@ function ensureMenus() {
             const d = data && data.data
             if (!d) return
             menus.value = {
-                favorite: Array.isArray(d.favorite) ? d.favorite.filter((item) => item && item.url) : [],
                 sys: Array.isArray(d.sys) ? d.sys : [],
                 menuList: Array.isArray(d.menuList) ? d.menuList : []
             }
@@ -782,7 +793,7 @@ const resultList = computed(() => {
     const kw = keyword.value
     if (!menus.value || !kw || kw.length < 2) return []
     const out = []
-    deepSearch(menus.value.favorite, '我的常用', out)
+    // 不搜索“我的常用”：其中的菜单均来自其他应用/模块，与下方数据重复
     deepSearch(menus.value.sys, '系统/应用', out)
     deepSearch(menus.value.menuList, undefined, out)
     return out
