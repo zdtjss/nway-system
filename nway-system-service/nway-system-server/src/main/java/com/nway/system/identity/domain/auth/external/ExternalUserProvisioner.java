@@ -9,6 +9,9 @@ import com.nway.system.common.tenant.TenantUtil;
 import com.nway.system.tenant.dao.TenantDao;
 import com.nway.system.identity.dao.UserDao;
 import com.nway.system.identity.entity.User;
+import com.nway.system.identity.entity.UserRole;
+import com.nway.system.identity.dao.UserRoleDao;
+
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +38,8 @@ public class ExternalUserProvisioner {
     @Autowired
     private UserDao userDao;
     @Autowired
+    private UserRoleDao userRoleDao;
+    @Autowired
     private TenantDao tenantDao;
     @Autowired
     private LoginUserAssembler loginUserAssembler;
@@ -56,8 +61,7 @@ public class ExternalUserProvisioner {
         }
         String tenantCode = properties.getTenantCode();
         if (tenantDao.getByCode(tenantCode) == null) {
-            throw new NwaySystemException(TENANT_NOT_INITIALIZED,
-                    "外部用户租户未初始化：" + tenantCode + "，请先执行租户初始化脚本");
+            throw new NwaySystemException(TENANT_NOT_INITIALIZED, "外部用户租户未初始化：" + tenantCode + "，请先执行租户初始化脚本");
         }
         User user = userDao.getByEmployeeId(employeeId);
         if (user == null) {
@@ -90,8 +94,15 @@ public class ExternalUserProvisioner {
         user.setIsAdmin(Boolean.FALSE);
         user.setTokenVersion(0);
         user.setTenantCode(tenantCode);
+
+        UserRole userRole = new UserRole();
+        userRole.setEmployeeId(employeeId);
+        userRole.setRoleId("r_base");
+        userRole.setTenantCode(tenantCode);
+
         try {
             userDao.insert(user);
+            userRoleDao.insert(userRole);
             log.info("外部用户首次登录，已落地影子账号 employeeId={} tenant={}", employeeId, tenantCode);
         } catch (DataIntegrityViolationException e) {
             // 并发首登：另一请求已完成落地

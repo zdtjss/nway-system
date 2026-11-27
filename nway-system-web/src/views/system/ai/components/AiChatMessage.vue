@@ -47,11 +47,13 @@
         </div>
 
         <div v-if="hasToolBody(tool)" v-show="!toolCollapsed.has(tool.id)" class="tool-body">
-          <template v-if="tool.view">
-            <div v-if="tool.view.message" class="tool-message" :class="{ error: tool.view.success === false }">
-              {{ tool.view.message }}
-            </div>
-            <AiViewBlock v-if="tool.view.success !== false" :view="tool.view" />
+          <template v-if="toolViews(tool).length">
+            <template v-for="(view, viewIndex) in toolViews(tool)" :key="viewIndex">
+              <div v-if="view.message" class="tool-message" :class="{ error: view.success === false }">
+                {{ view.message }}
+              </div>
+              <AiViewBlock v-if="view.success !== false" :view="view" />
+            </template>
           </template>
 
           <pre v-else-if="tool.result" class="tool-result"
@@ -121,7 +123,13 @@ const emit = defineEmits<{
 function hasToolBody(tool: UiTool) {
   // 未完成与已结束但无结果时也展示兜底文案，避免展开后一片空白
   if (tool.status === 'interrupted' || tool.status === 'done') return true
-  return !!(tool.view || tool.result)
+  return !!(tool.view || (tool.views && tool.views.length) || tool.result)
+}
+
+/** 批量查询等场景一个工具会有多个结果视图，统一按列表渲染。 */
+function toolViews(tool: UiTool) {
+  if (tool.views && tool.views.length) return tool.views
+  return tool.view ? [tool.view] : []
 }
 
 function toolStatusLabel(tool: UiTool) {

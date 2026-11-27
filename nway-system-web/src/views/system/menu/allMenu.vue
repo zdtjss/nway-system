@@ -56,7 +56,7 @@
                 </div>
             </div>
             <div class="content">
-                <div>
+                <div v-if="menus.favorite && menus.favorite.length > 0">
                     <div class="title">我的常用</div>
                     <div class="menu_list">
                         <div class="menu_item" v-for="menu in menus.favorite" @click="openMenu(menu)">

@@ -13,22 +13,24 @@
                     <pre v-show="thinkingOpen.has(msg.id)" class="gs-ai-thinking-text" @scroll="emit('scroll-follow', $event)">{{ msg.thinking }}</pre>
                 </div>
                 <template v-for="tool in msg.tools || []" :key="tool.id">
-                    <div v-if="tool.view" class="gs-ai-tool"
-                        :class="{ 'is-open': !toolCollapsed.has(tool.id), 'is-failed': tool.view.success === false }">
+                    <div v-if="toolViews(tool).length > 0" class="gs-ai-tool"
+                        :class="{ 'is-open': !toolCollapsed.has(tool.id), 'is-failed': toolViews(tool).some((view) => view.success === false) }">
                         <button type="button" class="gs-ai-tool-head" @click="emit('toggle-tool', tool.id)">
                             <el-icon class="gs-ai-tool-arrow" :class="{ 'is-open': !toolCollapsed.has(tool.id) }">
                                 <ArrowRight />
                             </el-icon>
                             <span class="gs-ai-tool-name">
-                                {{ tool.view.interfaceName || '接口调用结果' }}
+                                {{ toolHeader(tool) }}
                             </span>
-                            <span v-if="tool.view.success === false" class="gs-ai-tool-flag">调用失败</span>
+                            <span v-if="toolViews(tool).some((view) => view.success === false)" class="gs-ai-tool-flag">调用失败</span>
                         </button>
                         <div v-show="!toolCollapsed.has(tool.id)" class="gs-ai-tool-body">
-                            <div v-if="tool.view.message" class="gs-ai-tool-msg" :class="{ 'is-error': tool.view.success === false }">
-                                {{ tool.view.message }}
-                            </div>
-                            <AiViewBlock v-if="tool.view.success !== false" :view="tool.view" compact />
+                            <template v-for="(view, viewIndex) in toolViews(tool)" :key="viewIndex">
+                                <div v-if="view.message" class="gs-ai-tool-msg" :class="{ 'is-error': view.success === false }">
+                                    {{ view.message }}
+                                </div>
+                                <AiViewBlock v-if="view.success !== false" :view="view" compact />
+                            </template>
                         </div>
                     </div>
                 </template>
@@ -98,9 +100,22 @@ const emit = defineEmits(['toggle-thinking', 'toggle-tool', 'speak', 'open-full-
 const hasView = computed(() => {
     const hasSegmentView = Array.isArray(props.msg.segments)
         && props.msg.segments.some((segment) => segment.type === 'view')
-    const hasToolView = Array.isArray(props.msg.tools) && props.msg.tools.some((tool) => !!tool.view)
+    const hasToolView = Array.isArray(props.msg.tools)
+        && props.msg.tools.some((tool) => !!(tool.view || (tool.views && tool.views.length)))
     return hasSegmentView || hasToolView
 })
+
+/** 批量查询等场景一个工具会有多个结果视图，统一按列表渲染。 */
+function toolViews(tool) {
+    if (Array.isArray(tool.views) && tool.views.length) return tool.views
+    return tool.view ? [tool.view] : []
+}
+
+function toolHeader(tool) {
+    const views = toolViews(tool)
+    const name = views[0]?.interfaceName || '接口调用结果'
+    return views.length > 1 ? `${name} 等 ${views.length} 项` : name
+}
 
 // 正文包含 Markdown 表格时同样占满气泡宽度，避免宽表格被压缩
 const hasTable = computed(() => Array.isArray(props.msg.segments) && props.msg.segments.some(

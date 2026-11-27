@@ -245,6 +245,9 @@ FROM sys_role a
 INSERT INTO sys_role (id, role_name, role_code, app_code, description, tenant_code, creator_id, creator_name, create_time, is_deleted)
 VALUES ('r_admin', '系统管理员', 'admin', '*', '平台级管理员角色，拥有所有应用的全部权限', 'default', '001', '系统', NOW(), 0);
 
+insert into sys_role (id,role_name,role_code,app_code,description,tenant_code,creator_id,creator_name,modifier_id,modifier_name,create_time,modified_time,is_deleted) 
+values ('r_base','公共功能','base','*','','public','admin',NULL,'admin',NULL,'2026-11-19 10:18:31','2026-11-19 10:18:31',b'0');
+
 -- 平台导航 —— 目录分组
 INSERT INTO sys_menu (id, parent_id, name, url, icon, app_code, resource_code, type, action, sequence, is_enabled, source, tenant_code, creator_id, creator_name, create_time, is_deleted) VALUES
 ('m_sys_grp_org',     '', '组织架构', '', 'team',               'nway-system', NULL,  'DIR', NULL, 1, 1, 'PLATFORM', 'default', '001', '系统', NOW(), 0),

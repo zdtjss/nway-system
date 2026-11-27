@@ -101,7 +101,52 @@ class InvokeInterfaceToolTest {
         assertThat(invokeTool().isReturnDirect()).isFalse();
     }
 
+    @Test
+    @DisplayName("响应被 1MB 上限截断时返回 handoff，不把残缺 JSON 交给模型")
+    void truncatedResponseReturnsHandoff() {
+        AiInvokeResult truncated = new AiInvokeResult();
+        truncated.setSuccess(false);
+        truncated.setInterfaceCode("order.list");
+        truncated.setErrorCode("DATA_TOO_LARGE");
+        truncated.setMessage("目标接口响应超过单次读取上限");
+        truncated.setTruncated(true);
+        truncated.setRawBytes(2_000_000);
+        when(invoker.invoke(any(), any(), any())).thenReturn(truncated);
+
+        JSONObject body = invokeBody(invokeTool());
+
+        assertThat(body.getBooleanValue("success")).isFalse();
+        assertThat(body.getBooleanValue("truncated")).isTrue();
+        assertThat(body.containsKey("data")).isFalse();
+        assertThat(body.getJSONObject("handoff")).isNotNull();
+    }
+
+    @Test
+    @DisplayName("分析结果超过行数上限时只返回 handoff，不返回数据")
+    void analysisTooLargeReturnsHandoff() {
+        AiInvokeResult large = new AiInvokeResult();
+        large.setSuccess(true);
+        large.setInterfaceCode("order.list");
+        large.setMessage("success");
+        large.setData(Map.of("list", java.util.stream.IntStream.range(0, 500)
+                .mapToObj(i -> Map.of("orderNo", "SO" + i))
+                .toList(), "total", 500));
+        when(invoker.invoke(any(), any(), any())).thenReturn(large);
+
+        JSONObject body = invokeBody(invokeTool());
+
+        assertThat(body.containsKey("data")).isFalse();
+        assertThat(body.getBooleanValue("truncated")).isTrue();
+        assertThat(body.getJSONObject("handoff")).isNotNull();
+        assertThat(body.getJSONObject("limits").getIntValue("maxRows"))
+                .isEqualTo(new com.nway.system.ai.service.AiLimits().getAnalysisMaxRows());
+    }
+
     private JSONObject invoke(InvokeInterfaceTool tool) {
+        return invokeBody(tool).getJSONObject("data");
+    }
+
+    private JSONObject invokeBody(InvokeInterfaceTool tool) {
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("interfaceCode", "order.list");
         input.put("args", Map.of());
@@ -116,7 +161,7 @@ class InvokeInterfaceToolTest {
         ToolResultBlock result = tool.callAsync(param).block();
         assertThat(result).isNotNull();
         String text = ((TextBlock) result.getOutput().get(0)).getText();
-        return JSON.parseObject(text).getJSONObject("data");
+        return JSON.parseObject(text);
     }
 
     private InvokeInterfaceTool invokeTool() {

@@ -27,17 +27,21 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.nway.system.ai.service.AiChatFileService;
 import com.nway.system.ai.service.AiChatService;
+import com.nway.system.ai.service.AiConversationExportService;
 import com.nway.system.ai.service.AiConversationService;
 import com.nway.system.ai.service.AiModelService;
 import com.nway.system.ai.service.AiUserContexts;
 import com.nway.system.ai.web.model.AiChatModelVo;
 import com.nway.system.ai.web.model.AiChatRequest;
 import com.nway.system.ai.web.model.AiConfirmRequest;
+import com.nway.system.ai.web.model.AiConversationExportRequest;
 import com.nway.system.ai.web.model.AiConversationVo;
+import com.nway.system.ai.web.model.AiExportVo;
 import com.nway.system.ai.web.model.AiFileVo;
 import com.nway.system.ai.web.model.AiMessageVo;
 import com.nway.system.ai.domain.AiUserContext;
 import com.nway.system.authorization.annotation.RequiresPermission;
+import com.nway.system.common.exception.NwaySystemException;
 import com.nway.system.common.web.PageVo;
 import com.nway.system.common.web.Result;
 
@@ -73,6 +77,7 @@ public class AiChatController {
 
     private final AiChatService chatService;
     private final AiConversationService conversationService;
+    private final AiConversationExportService conversationExportService;
     private final AiChatFileService fileService;
     private final AiModelService modelService;
     private final com.nway.system.ai.service.AiInterfaceService interfaceService;
@@ -80,12 +85,14 @@ public class AiChatController {
     private final com.nway.system.ai.service.AiAuditService auditService;
 
     public AiChatController(AiChatService chatService, AiConversationService conversationService,
+                            AiConversationExportService conversationExportService,
                             AiChatFileService fileService, AiModelService modelService,
                             com.nway.system.ai.service.AiInterfaceService interfaceService,
                             com.nway.system.ai.service.AiSchemaCompiler schemaCompiler,
                             com.nway.system.ai.service.AiAuditService auditService) {
         this.chatService = chatService;
         this.conversationService = conversationService;
+        this.conversationExportService = conversationExportService;
         this.fileService = fileService;
         this.modelService = modelService;
         this.interfaceService = interfaceService;
@@ -189,6 +196,21 @@ public class AiChatController {
     @GetMapping("conversations/{id}/messages")
     public Result<List<AiMessageVo>> messages(@PathVariable String id) {
         return Result.ok(chatService.history(AiUserContexts.current(), id));
+    }
+
+    /**
+     * 导出会话记录：读取已落库消息直接生成文件，不重新调用大模型分析。
+     */
+    @PostMapping("conversations/{id}/export")
+    public Result<AiExportVo> exportConversation(
+            @PathVariable String id,
+            @RequestBody(required = false) AiConversationExportRequest request) {
+        AiUserContext user = AiUserContexts.current();
+        try {
+            return Result.ok(conversationExportService.export(user, id, request));
+        } catch (AiConversationExportService.ConversationTooLargeException e) {
+            throw new NwaySystemException(e.getMessage());
+        }
     }
 
     @PatchMapping("conversations/{id}")

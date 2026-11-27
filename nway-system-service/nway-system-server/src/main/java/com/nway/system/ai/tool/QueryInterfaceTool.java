@@ -33,12 +33,13 @@ public class QueryInterfaceTool extends InvokeInterfaceTool {
     public static final String NAME = "query_interface";
 
     private static final String DESCRIPTION = """
-            直接查询只读业务接口，并把结果作为本轮答复展示给用户；这是接口查询的默认工具。
+            直接查询单个只读业务接口，并把结果作为本轮答复展示给用户。
+            新对话优先使用 query_interfaces（支持一次提交多个只读查询）；本工具保留为单次查询的兼容入口。
             结果直接展示，不做统计汇总；不要为了汇总、统计接口结果而改用 invoke_interface。
             适用：一次查询即可完成，用户只想查看/获取数据，不需要分析，也不需要基于结果继续调用其他接口，且本轮不需要导出文件。
-            不适用：用户要求导出、下载、保存结果或生成报告/表格文件（需要先取数再生成文件），以及需要多次调用接口或写操作的场景；这些场景请使用 invoke_interface，导出再用 export_analysis。
-            只读接口专属；写操作请使用 invoke_interface（会触发用户确认）。需要多次调用接口时不要使用本工具。
-            args 必须严格使用 get_interface_config 返回的 inputSchema 字段。
+            不适用：用户要求导出、下载、保存结果或生成报告/表格文件；需要多次调用接口或写操作的场景。
+            只读接口专属；写操作请使用 invoke_interface（会触发用户确认）。
+            args 必须严格使用 search_interfaces 返回的 inputSchema 字段。
             如果缺少必填信息，先向用户追问，不要猜测。
             调用成功后本轮直接结束，结果不会再返回给你继续推理。
             """;
@@ -71,7 +72,7 @@ public class QueryInterfaceTool extends InvokeInterfaceTool {
             body.put("success", false);
             body.put("error", AiErrors.INVALID_ARGUMENT);
             body.put("message", "本轮用户要求导出文件，query_interface 会直接结束本轮导致无法生成文件；"
-                    + "请改用 invoke_interface 获取数据，再调用 export_analysis 生成文件");
+                    + "请改用 export_query_data 直接导出，或使用 export_tool_result / export_conversation");
             return Mono.just(ToolResultBlock.text(JSON.toJSONString(body))
                     .withState(ToolResultState.ERROR));
         }

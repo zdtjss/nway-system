@@ -71,7 +71,7 @@ public final class AiSseSupport {
                 payload.put("blockId", ((TextBlockStartEvent) event).getBlockId());
             }
             case TEXT_BLOCK_DELTA -> {
-                // query_interface 等 returnDirect 工具的结果已由工具卡片展示，
+                // query_interfaces 等 returnDirect 工具的结果已由工具卡片展示，
                 // 框架会把同一份结果再合成一条助手正文，这里丢弃避免重复展示。
                 if (isReturnDirect(event)) {
                     return null;

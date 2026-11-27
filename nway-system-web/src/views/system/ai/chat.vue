@@ -19,6 +19,11 @@
             </div>
           </div>
         </div>
+        <button type="button" class="chat-export" :disabled="!activeId || streaming || exporting"
+                title="导出当前会话记录" @click="exportCurrentConversation">
+          <el-icon><Download /></el-icon>
+          <span>导出对话</span>
+        </button>
       </header>
 
       <div ref="scrollEl" class="message-scroll" @scroll="trackFollowScroll">
@@ -81,10 +86,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ChatDotRound } from '@element-plus/icons-vue'
+import { ChatDotRound, Download } from '@element-plus/icons-vue'
 import {
-  assetUrl, cancelChat, deleteConversation, deletePrompt, extractPrompt, getMessages, listChatModels,
-  listPrompts, mergeAssistantMessages, renameConversation, savePrompt, streamChat, streamConfirm, updatePrompt,
+  assetUrl, cancelChat, deleteConversation, deletePrompt, exportConversation, extractPrompt, getMessages,
+  listChatModels, listPrompts, mergeAssistantMessages, renameConversation, savePrompt, streamChat, streamConfirm,
+  updatePrompt,
   type AiChatModelVo, type AiConversationVo, type AiFileVo, type AiMessage, type AiPromptVo, type ChatEvent
 } from '@/api/ai'
 import AiChatComposer from './components/AiChatComposer.vue'
@@ -97,7 +103,9 @@ import type { ConfirmSubmitPayload, PromptDraft, UiMessage, UiTool } from './com
 import { useAiChatHistory } from '@/composables/useAiChatHistory'
 import { useAiVoice } from '@/composables/useAiVoice'
 import { useAiChatHandoffStore } from '@/stores/aiChatStore'
-import { appendText, buildToolView, CONFIG_TOOL, INVOKE_TOOL, restoreCompletedTools } from '@/utils/aiTool'
+import {
+  appendText, buildToolViews, INVOKE_TOOL, isConfigTool, restoreCompletedTools
+} from '@/utils/aiTool'
 import { inputFieldLabel, rememberInterfaceConfig, splitViewSegments } from '@/utils/aiView'
 import { followBottom, followLast, trackFollowScroll } from '@/utils/scrollFollow'
 
@@ -188,6 +196,8 @@ const prompts = ref<AiPromptVo[]>([])
 const quickPrompts = computed(() => prompts.value.filter((prompt) => quickPromptIds.value.includes(prompt.id)))
 const promptSaving = ref(false)
 const extracting = ref(false)
+/** 会话导出进行中：避免重复提交 */
+const exporting = ref(false)
 
 const {
   aiHistoryOpen: historyPopover,
@@ -285,21 +295,24 @@ function toHandoffMessage(raw: any): UiMessage {
     role: raw.role === 'user' ? 'user' : 'assistant',
     text: raw.text || '',
     thinking: raw.thinking || '',
-    tools: (raw.tools || []).map((tool: any): UiTool => ({
-      id: tool.id || uid(),
-      name: tool.name || INVOKE_TOOL,
-      status: tool.status === 'error' || tool.status === 'denied'
-        ? tool.status
-        // 面板交接前已停止流式，执行中的调用不会再有结果事件
-        : tool.status === 'interrupted' || tool.status === 'running'
-          ? 'interrupted'
-          : 'done',
-      result: tool.result,
-      // 无结果时保留面板的兜底说明；有结果则按工具类型重新渲染（导出为文件卡片，接口按出参结构）
-      view: tool.result
-        ? buildToolView(tool.name || INVOKE_TOOL, tool.result) || tool.view || null
-        : tool.view || null
-    })),
+    tools: (raw.tools || []).map((tool: any): UiTool => {
+      const name = tool.name || INVOKE_TOOL
+      const views = tool.result ? buildToolViews(name, tool.result) : []
+      return {
+        id: tool.id || uid(),
+        name,
+        status: tool.status === 'error' || tool.status === 'denied'
+          ? tool.status
+          // 面板交接前已停止流式，执行中的调用不会再有结果事件
+          : tool.status === 'interrupted' || tool.status === 'running'
+            ? 'interrupted'
+            : 'done',
+        result: tool.result,
+        // 无结果时保留面板的兜底说明；有结果则按工具类型重新渲染（导出为文件卡片，接口按出参结构）
+        view: views[0] || tool.view || null,
+        views
+      }
+    }),
     // 按已结束状态重新分段，避免把面板流式中的占位段带过来
     segments: splitViewSegments(raw.text || '', false),
     attachments: raw.attachments || [],
@@ -348,13 +361,14 @@ function toUiMessage(message: AiMessage): UiMessage {
       // 历史附件：后端按 fileId 重新生成预览地址，直接作为用户消息的附件展示
       ui.attachments = [...(ui.attachments || []), ...(block.files || [])]
     } else if (block.type === 'tool_use') {
-      if (block.name === CONFIG_TOOL) {
+      if (isConfigTool(block.name)) {
         // 查询接口配置不再单独占用工具卡片，并入思考过程展示
         rememberInterfaceConfig(block.result)
         ui.thinking = appendText(ui.thinking, buildConfigThinking(block.result))
         return
       }
       const toolName = block.name || INVOKE_TOOL
+      const views = buildToolViews(toolName, block.result)
       ui.tools.push({
         id: block.id || uid(),
         name: toolName,
@@ -363,7 +377,8 @@ function toUiMessage(message: AiMessage): UiMessage {
           ? 'error'
           : block.result || block.state ? 'done' : 'interrupted',
         result: block.result,
-        view: buildToolView(toolName, block.result)
+        view: views[0] || null,
+        views
       })
     }
   })
@@ -404,6 +419,26 @@ async function onConvCommand(command: string, conv: AiConversationVo) {
     } catch (e) {
       // 取消
     }
+  }
+}
+
+// ==================== 会话导出 ====================
+
+/** 导出当前会话：直接读取已落库消息生成文件，不重新调用模型分析。 */
+async function exportCurrentConversation() {
+  if (!activeId.value) {
+    ElMessage.warning('当前还没有可导出的会话')
+    return
+  }
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const res = await exportConversation(activeId.value, { format: 'docx' })
+    const url = assetUrl(res?.data?.url)
+    if (url) window.open(url, '_blank')
+    ElMessage.success('会话已导出')
+  } finally {
+    exporting.value = false
   }
 }
 
@@ -537,14 +572,14 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
       pushAutoSpeech(target, '\n')
       break
     case 'tool.call.start': {
-      if (event.name === CONFIG_TOOL) break
+      if (isConfigTool(event.name)) break
       if (!findTool(event.toolCallId)) {
         target.tools.push({ id: event.toolCallId || uid(), name: event.name, status: 'running' })
       }
       break
     }
     case 'tool.result.delta': {
-      if (event.name === CONFIG_TOOL) {
+      if (isConfigTool(event.name)) {
         const key = event.toolCallId || ''
         pendingConfigResults.set(key, (pendingConfigResults.get(key) || '') + (event.delta || ''))
         break
@@ -555,7 +590,7 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
       break
     }
     case 'tool.result.end': {
-      if (event.name === CONFIG_TOOL) {
+      if (isConfigTool(event.name)) {
         const key = event.toolCallId || ''
         const raw = pendingConfigResults.get(key) || ''
         pendingConfigResults.delete(key)
@@ -567,7 +602,9 @@ function handleEvent(event: ChatEvent, target: UiMessage) {
       const tool = findTool(event.toolCallId)
       if (tool) {
         tool.status = event.state === 'ERROR' || event.state === 'DENIED' ? 'error' : 'done'
-        tool.view = buildToolView(tool.name, tool.result)
+        const views = buildToolViews(tool.name, tool.result)
+        tool.views = views
+        tool.view = views[0] || null
       }
       break
     }
@@ -962,6 +999,33 @@ function followStreamTail(selector: string) {
   border-radius: 50%;
   background: #2fc26e;
   box-shadow: 0 0 0 3px rgba(47, 194, 110, 0.12);
+}
+
+.chat-export {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid #e6ebf5;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #4e5969;
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background-color 0.15s;
+}
+
+.chat-export:hover:not(:disabled) {
+  border-color: rgba(99, 91, 255, 0.35);
+  background: #fff;
+  color: #3b5bdb;
+}
+
+.chat-export:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .message-scroll {

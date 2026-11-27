@@ -96,13 +96,25 @@ public class FileService {
         if (content == null || content.length == 0) {
             throw new NwaySystemException("生成文件内容不能为空");
         }
+        return saveGenerated(new ByteArrayInputStream(content), content.length, fileName, bizType, bizId, remark);
+    }
+
+    /**
+     * 服务端生成文件落库（流式）：用于大数据导出，避免文件内容全量驻留内存。
+     * <p>
+     * 调用方负责在写入完成后关闭流；写入失败或 DB 写入失败时按 {@link #persist} 的统一补偿逻辑处理。
+     */
+    public FileVo saveGenerated(InputStream content, long size, String fileName, String bizType,
+                                String bizId, String remark) {
+        if (content == null || size <= 0) {
+            throw new NwaySystemException("生成文件内容不能为空");
+        }
         String name = fileTypePolicy.sanitizeName(fileName);
         String ext = extensionOf(name);
         if (StringUtils.isBlank(ext)) {
             throw new NwaySystemException("文件名缺少扩展名");
         }
-        return persist(new ByteArrayInputStream(content), content.length, name, ext,
-                fileTypePolicy.contentTypeOf(ext), bizType, bizId, remark);
+        return persist(content, size, name, ext, fileTypePolicy.contentTypeOf(ext), bizType, bizId, remark);
     }
 
     private FileVo persist(InputStream source, long size, String fileName, String ext, String contentType,

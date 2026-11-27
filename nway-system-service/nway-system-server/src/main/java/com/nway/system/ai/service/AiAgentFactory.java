@@ -3,10 +3,14 @@ package com.nway.system.ai.service;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.nway.system.ai.domain.AiUserContext;
 import com.nway.system.ai.tool.ExportAnalysisTool;
+import com.nway.system.ai.tool.ExportConversationTool;
+import com.nway.system.ai.tool.ExportQueryDataTool;
+import com.nway.system.ai.tool.ExportToolResultTool;
 import com.nway.system.ai.tool.GetInterfaceConfigTool;
 import com.nway.system.ai.tool.InvokeInterfaceTool;
 import com.nway.system.ai.tool.LookupOptionsTool;
 import com.nway.system.ai.tool.QueryInterfaceTool;
+import com.nway.system.ai.tool.QueryInterfacesTool;
 import com.nway.system.ai.tool.ReadFileTool;
 import com.nway.system.ai.entity.AiModel;
 import io.agentscope.core.permission.PermissionContextState;
@@ -34,7 +38,7 @@ import java.util.HexFormat;
  * HarnessAgent 工厂：按「模型 + 系统提示词」缓存 Agent。
  * <p>
  * Agent 本身无会话状态（会话在 Redis），可跨用户复用；提示词变化即换缓存键。
- * 核心工具 4 个：get_interface_config / query_interface（查询直返）/ invoke_interface / export_analysis。
+ * 工具：接口检索 / 只读批量查询 / 通用调用 / 确定性导出 / 会话导出 / 结果导出 / 小数据分析导出。
  *
  * @author nway
  */
@@ -50,10 +54,15 @@ public class AiAgentFactory {
     private final AiModelService modelService;
     private final GetInterfaceConfigTool getInterfaceConfigTool;
     private final QueryInterfaceTool queryInterfaceTool;
+    private final QueryInterfacesTool queryInterfacesTool;
     private final InvokeInterfaceTool invokeInterfaceTool;
     private final LookupOptionsTool lookupOptionsTool;
     private final ReadFileTool readFileTool;
+    private final ExportQueryDataTool exportQueryDataTool;
+    private final ExportConversationTool exportConversationTool;
+    private final ExportToolResultTool exportToolResultTool;
     private final ExportAnalysisTool exportAnalysisTool;
+    private final AiLimits limits;
     private final boolean lookupOptionsEnabled;
     private final boolean readFileEnabled;
     private final Path workspace;
@@ -65,10 +74,15 @@ public class AiAgentFactory {
     public AiAgentFactory(AgentStateStore stateStore, AiModelService modelService,
                           GetInterfaceConfigTool getInterfaceConfigTool,
                           @Qualifier("queryInterfaceTool") QueryInterfaceTool queryInterfaceTool,
+                          @Qualifier("queryInterfacesTool") QueryInterfacesTool queryInterfacesTool,
                           @Qualifier("invokeInterfaceTool") InvokeInterfaceTool invokeInterfaceTool,
                           LookupOptionsTool lookupOptionsTool,
                           ReadFileTool readFileTool,
+                          ExportQueryDataTool exportQueryDataTool,
+                          ExportConversationTool exportConversationTool,
+                          ExportToolResultTool exportToolResultTool,
                           ExportAnalysisTool exportAnalysisTool,
+                          AiLimits limits,
                           DistributedStore distributedStore,
                           @Value("${nway.ai.tools.lookup-options-enabled:false}") boolean lookupOptionsEnabled,
                           @Value("${nway.ai.tools.read-file-enabled:false}") boolean readFileEnabled,
@@ -77,10 +91,15 @@ public class AiAgentFactory {
         this.modelService = modelService;
         this.getInterfaceConfigTool = getInterfaceConfigTool;
         this.queryInterfaceTool = queryInterfaceTool;
+        this.queryInterfacesTool = queryInterfacesTool;
         this.invokeInterfaceTool = invokeInterfaceTool;
         this.lookupOptionsTool = lookupOptionsTool;
         this.readFileTool = readFileTool;
+        this.exportQueryDataTool = exportQueryDataTool;
+        this.exportConversationTool = exportConversationTool;
+        this.exportToolResultTool = exportToolResultTool;
         this.exportAnalysisTool = exportAnalysisTool;
+        this.limits = limits;
         this.lookupOptionsEnabled = lookupOptionsEnabled;
         this.readFileEnabled = readFileEnabled;
         this.workspace = Path.of(workspaceDir).toAbsolutePath().normalize();
@@ -128,11 +147,17 @@ public class AiAgentFactory {
 
     private String optionalToolHint() {
         StringBuilder sb = new StringBuilder();
+        if (!limits.isQueryBatchEnabled()) {
+            sb.append("\n补充：批量查询不可用，只读查询请使用 query_interface 单次调用。");
+        }
+        if (!limits.isConversationExportEnabled()) {
+            sb.append("\n补充：会话导出不可用；用户要求导出对话时说明该功能暂未开放。");
+        }
         if (lookupOptionsEnabled) {
-            sb.append("\n12. 字段带 optionSource 或候选值过多时，可用 lookup_options(interfaceCode, fieldKey, keyword) 查询候选值。");
+            sb.append("\n补充：字段带 optionSource 或候选值过多时，可用 lookup_options(interfaceCode, fieldKey, keyword) 查询候选值。");
         }
         if (readFileEnabled) {
-            sb.append("\n13. 附件：图片已随消息直接提供，可直接分析；文档用 read_file(fileId) 按需读取；"
+            sb.append("\n补充：图片已随消息直接提供，可直接分析；文档用 read_file(fileId) 按需读取；"
                     + "纯粹的文件内容分析不要调用业务接口，需要读文件再调接口时先 read_file 提取信息。");
         }
         return sb.toString();
@@ -141,8 +166,18 @@ public class AiAgentFactory {
     private HarnessAgent build(String systemPrompt, AiModel modelEntity) {
         Toolkit toolkit = new Toolkit();
         toolkit.registerAgentTool(getInterfaceConfigTool);
-        toolkit.registerAgentTool(queryInterfaceTool);
+        if (limits.isQueryBatchEnabled()) {
+            toolkit.registerAgentTool(queryInterfacesTool);
+        } else {
+            // 开关关闭时回退到单次直查，保持旧行为
+            toolkit.registerAgentTool(queryInterfaceTool);
+        }
         toolkit.registerAgentTool(invokeInterfaceTool);
+        toolkit.registerAgentTool(exportQueryDataTool);
+        if (limits.isConversationExportEnabled()) {
+            toolkit.registerAgentTool(exportConversationTool);
+            toolkit.registerAgentTool(exportToolResultTool);
+        }
         toolkit.registerAgentTool(exportAnalysisTool);
         if (lookupOptionsEnabled) {
             toolkit.registerAgentTool(lookupOptionsTool);

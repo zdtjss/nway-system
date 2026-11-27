@@ -86,7 +86,7 @@ class GetInterfaceConfigToolTest {
 
         assertThat(body.containsKey("lowConfidence")).isFalse();
         assertThat(body.getString("next"))
-                .contains("query_interface")
+                .contains("query_interfaces")
                 .contains("invoke_interface");
     }
 

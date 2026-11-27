@@ -70,6 +70,16 @@ public class AiInvoker {
      * 调用已校验参数的接口。
      */
     public AiInvokeResult invoke(AiInterfaceConfig config, Map<String, Object> args, AiUserContext user) {
+        return invoke(config, args, user, null);
+    }
+
+    /**
+     * 调用已校验参数的接口，并覆盖单次响应字节上限。
+     * <p>
+     * 覆盖值仅供确定性导出等内部链路按页调整使用，模型无法传入。
+     */
+    public AiInvokeResult invoke(AiInterfaceConfig config, Map<String, Object> args, AiUserContext user,
+                                 Integer maxResponseBytesOverride) {
         if (user == null || StringUtils.isBlank(user.getToken())) {
             return AiInvokeResult.failed(config.getInterfaceCode(), AiErrors.USER_CONTEXT_MISSING, "缺少用户上下文");
         }
@@ -150,7 +160,9 @@ public class AiInvoker {
 
         int timeoutMs = invokeConfig != null && invokeConfig.getTimeoutMs() != null
                 ? invokeConfig.getTimeoutMs() : DEFAULT_TIMEOUT_MS;
-        int maxBytes = invokeConfig != null && invokeConfig.getMaxResponseBytes() != null
+        int maxBytes = maxResponseBytesOverride != null && maxResponseBytesOverride > 0
+                ? maxResponseBytesOverride
+                : invokeConfig != null && invokeConfig.getMaxResponseBytes() != null
                 ? invokeConfig.getMaxResponseBytes() : DEFAULT_MAX_BYTES;
         int requestBytes = requestBody == null ? 0 : requestBody.getBytes(StandardCharsets.UTF_8).length;
         log.debug("调用业务接口 interfaceCode={} method={} url={} timeoutMs={} requestBytes={}",
@@ -183,10 +195,14 @@ public class AiInvoker {
                     HttpResponse.BodyHandlers.ofByteArray());
             long latency = System.currentTimeMillis() - start;
             byte[] bytes = response.body() == null ? new byte[0] : response.body();
-            if (bytes.length > maxBytes) {
-                byte[] truncated = new byte[maxBytes];
-                System.arraycopy(bytes, 0, truncated, 0, maxBytes);
-                bytes = truncated;
+            long rawBytes = bytes.length;
+            boolean truncated = rawBytes > maxBytes;
+            if (truncated) {
+                // 只保留上限内的字节用于诊断日志，绝不把截断内容当作成功结果解析：
+                // 截断的 JSON 交给模型会诱导其基于残缺数据作答或反复重试。
+                byte[] kept = new byte[maxBytes];
+                System.arraycopy(bytes, 0, kept, 0, maxBytes);
+                bytes = kept;
             }
             String text = new String(bytes, StandardCharsets.UTF_8);
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -196,9 +212,24 @@ public class AiInvoker {
                 AiInvokeResult result = AiInvokeResult.failed(config.getInterfaceCode(), AiErrors.TARGET_ERROR,
                         "目标系统返回 HTTP " + response.statusCode());
                 result.setLatencyMs(latency);
+                result.setRawBytes(rawBytes);
+                result.setTruncated(truncated);
+                return result;
+            }
+            if (truncated) {
+                log.warn("业务接口响应超过读取上限 interfaceCode={} method={} maxBytes={} rawBytes={} latency={}ms",
+                        config.getInterfaceCode(), httpMethod, maxBytes, rawBytes, latency);
+                AiInvokeResult result = AiInvokeResult.failed(config.getInterfaceCode(),
+                        AiErrors.DATA_TOO_LARGE,
+                        "目标接口响应超过单次读取上限（" + maxBytes + " 字节），数据不完整，禁止分析或导出");
+                result.setLatencyMs(latency);
+                result.setRawBytes(rawBytes);
+                result.setTruncated(true);
                 return result;
             }
             AiInvokeResult result = parse(config, text, latency);
+            result.setRawBytes(rawBytes);
+            result.setTruncated(false);
             if (result.isSuccess()) {
                 log.info("业务接口调用完成 interfaceCode={} method={} status={} latency={}ms requestBytes={} "
                                 + "responseBytes={}", config.getInterfaceCode(), httpMethod,

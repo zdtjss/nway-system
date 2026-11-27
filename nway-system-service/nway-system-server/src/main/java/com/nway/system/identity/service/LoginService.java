@@ -1,32 +1,32 @@
 package com.nway.system.identity.service;
 
-import com.nway.system.common.util.ClientIpResolver;
-import com.nway.system.tenant.support.TenantStatusCache;
-import com.nway.system.identity.service.UserService;
-import com.nway.system.identity.domain.auth.AuthorizationService;
-import com.nway.system.identity.domain.auth.AuthorizationServiceRegistry;
-import com.nway.system.identity.domain.auth.external.ExternalPasswordAuthenticator;
-import com.nway.system.identity.service.OnlineUserService;
-import com.nway.system.authorization.service.policy.PolicyCacheManager;
-import com.nway.system.config.properties.JwtProperties;
-import com.nway.system.identity.web.model.LoginDto;
-import com.nway.system.common.security.LoginUser;
-import com.nway.system.common.enums.ErrorCodeEnum;
-import com.nway.system.common.exception.NwaySystemException;
-import com.nway.system.common.security.JwtUtil;
-import com.nway.system.common.security.LoginUserContext;
-import com.nway.system.common.tenant.TenantUtil;
-import com.nway.system.identity.dao.UserDao;
-import io.jsonwebtoken.Claims;
-import jakarta.servlet.http.HttpServletRequest;
-import lombok.extern.slf4j.Slf4j;
+import java.util.List;
+
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
-import java.util.List;
+import com.nway.system.authorization.service.policy.PolicyCacheManager;
+import com.nway.system.common.enums.ErrorCodeEnum;
+import com.nway.system.common.exception.NwaySystemException;
+import com.nway.system.common.security.JwtUtil;
+import com.nway.system.common.security.LoginUser;
+import com.nway.system.common.security.LoginUserContext;
+import com.nway.system.common.tenant.TenantUtil;
+import com.nway.system.config.properties.JwtProperties;
+import com.nway.system.identity.dao.UserDao;
+import com.nway.system.identity.domain.auth.AuthorizationService;
+import com.nway.system.identity.domain.auth.AuthorizationServiceRegistry;
+import com.nway.system.identity.domain.auth.external.ExternalPasswordAuthenticator;
+import com.nway.system.identity.web.model.LoginDto;
+import com.nway.system.tenant.support.TenantStatusCache;
+import com.nway.system.common.util.ClientIpResolver;
+
+import io.jsonwebtoken.Claims;
+import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 登录服务（JWT 无状态认证）。
@@ -59,10 +59,10 @@ public class LoginService {
     private UserService userService;
 
     @Autowired
-    private com.nway.system.identity.service.UserLoginKeyService loginKeyService;
+    private UserLoginKeyService loginKeyService;
 
     @Autowired
-    private com.nway.system.common.util.ClientIpResolver clientIpResolver;
+    private ClientIpResolver clientIpResolver;
 
     @Autowired
     private OnlineUserService onlineUserService;

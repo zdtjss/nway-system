@@ -36,8 +36,10 @@ public class ExportAnalysisTool extends ToolBase {
     public static final String NAME = "export_analysis";
 
     private static final String DESCRIPTION = """
-            把当前对话中的分析结果导出为文件，并返回用户可下载的文件信息。
-            仅当用户明确要求导出、下载、保存分析结果或生成报告/表格文件时调用；普通问答不要调用。
+            把小数据分析结果导出为文件（仅限小数据报告）。
+            适用：用户要求把当前对话中的分析结论、指标、对比整理成报告/表格文件，且数据量不大。
+            不适用：导出原始明细或大数据 → export_query_data；导出整段对话 → export_conversation；
+            导出已有查询结果 → export_tool_result。大数据不要让模型重新组织 blocks，也不要把数据粘进 blocks。
             只能使用当前对话中已经展示或工具返回的真实数据，禁止编造、推测或补全不存在的记录；
             数据不足时先向用户说明缺少什么，不要生成空文件。
             blocks 按展示顺序组织：
@@ -50,8 +52,8 @@ public class ExportAnalysisTool extends ToolBase {
                "rows":[{"region":"华东"}]}}]}
             格式选择：用户指定时按用户要求；未指定时，明细/表格优先 xlsx，分析报告优先 docx，
             汇报演示优先 pptx，需要浏览器直接查看时用 html。
-            导出所需数据不在当前对话中时，必须先用 invoke_interface 查询（禁止使用 query_interface，
-            它会直接结束本轮），拿到结果后再调用本工具。
+            导出所需数据不在当前对话中时，小数据可用 invoke_interface 查询后导出；
+            需要全量/明细时改用 export_query_data，不要先用 invoke_interface 取大数据。
             用户明确要求导出时，必须实际调用本工具生成文件；只查询数据或在正文中说明导出计划都不算完成。
             生成成功后只需简短告知用户文件已生成，下载链接由对话界面展示，不要重复粘贴大段数据。
             """;
@@ -95,6 +97,10 @@ public class ExportAnalysisTool extends ToolBase {
         if (blocks == null) {
             return error(AiErrors.INVALID_ARGUMENT, "blocks 不能为空，请提供要导出的分析内容");
         }
+        if (containsTruncatedView(blocks)) {
+            return limitError("分析内容包含已截断的数据，无法生成完整文件；"
+                    + "请缩小分析范围，或改用 export_query_data 导出原始数据");
+        }
         try {
             AiExportRequest request = new AiExportRequest();
             request.setFormat(format);
@@ -128,11 +134,46 @@ public class ExportAnalysisTool extends ToolBase {
         } catch (NwaySystemException e) {
             log.warn("工具调用失败 tool={} session={} toolCallId={} error={}",
                     NAME, sessionId, toolCallId, e.getMessage());
-            return error("EXPORT_FAILED", e.getMessage());
+            return limitError(e.getMessage());
         } catch (Exception e) {
             log.error("工具调用异常 tool={} session={} toolCallId={}", NAME, sessionId, toolCallId, e);
             return error("EXPORT_FAILED", "导出失败，请稍后重试");
         }
+    }
+
+    /**
+     * 内容超限属于可降级错误：返回 handoff，提示改用确定性导出或缩小范围。
+     */
+    private ToolResultBlock limitError(String message) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("success", false);
+        body.put("error", "EXPORT_LIMIT_EXCEEDED");
+        body.put("message", message);
+        Map<String, Object> handoff = new LinkedHashMap<>();
+        handoff.put("type", "MENU_OR_ADMIN");
+        handoff.put("message", "分析结果超出在线导出上限。完整数据请改用 export_query_data 导出原始数据，"
+                + "或通过对应业务菜单导出。");
+        handoff.put("suggestedAction", "MENU_EXPORT");
+        handoff.put("options", List.of(
+                Map.of("action", "EXPORT_DATA", "label", "导出原始数据"),
+                Map.of("action", "NARROW_SCOPE", "label", "缩小分析范围")));
+        body.put("handoff", handoff);
+        return ToolResultBlock.text(JSON.toJSONString(body));
+    }
+
+    /**
+     * blocks 中任一视图带 truncated=true 时，数据不完整，不允许生成文件。
+     */
+    private boolean containsTruncatedView(List<Object> blocks) {
+        for (Object block : blocks) {
+            if (!(block instanceof Map<?, ?> map)) {
+                continue;
+            }
+            if (map.get("view") instanceof Map<?, ?> view && Boolean.TRUE.equals(view.get("truncated"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private ToolResultBlock error(String code, String message) {

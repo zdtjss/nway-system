@@ -46,7 +46,7 @@ public class LookupOptionsTool extends ToolBase {
         super(ToolBase.builder()
                 .name(NAME)
                 .description("""
-                        按关键词查询接口字段的候选值（下拉选项）。仅在 get_interface_config 返回的字段
+                        按关键词查询接口字段的候选值（下拉选项）。仅在 search_interfaces 返回的字段
                         带 optionSource 或选项过多时使用；查询结果仍需用户确认后再传给 invoke_interface。
                         """)
                 .inputSchema(inputSchema())
@@ -186,7 +186,7 @@ public class LookupOptionsTool extends ToolBase {
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("interfaceCode", Map.of(
                 "type", "string",
-                "description", "接口编码，来自 get_interface_config"));
+                "description", "接口编码，来自 search_interfaces"));
         properties.put("fieldKey", Map.of(
                 "type", "string",
                 "description", "需要查询候选值的字段 key"));

@@ -342,23 +342,51 @@ function collectOutputFieldMeta(schema: any, fields: Map<string, FieldMeta>, ove
 
 // ==================== invoke_interface 结果视图 ====================
 
+/**
+ * 结构化降级（handoff）：数据过大或无法保证完整时，只展示提示，不展示数据。
+ */
+export function buildHandoffView(raw?: string | null): AiView | null {
+  if (!raw) return null
+  const result = parseToolResult(raw)
+  if (!isPlainObject(result) || !result.handoff) return null
+  const handoff = result.handoff as any
+  const message = (typeof handoff.message === 'string' && handoff.message)
+    || (typeof result.message === 'string' && result.message)
+    || '数据量超出在线处理上限，已停止分析。'
+  return {
+    type: 'empty',
+    success: false,
+    title: '数据量超出在线处理上限',
+    message,
+    truncated: true
+  }
+}
+
 /** 调用结果按接口字段定义与 data 的 JSON 结构选择表格、字段列表或清单展示。 */
 export function buildInvokeView(raw?: string | null): AiView | null {
   if (!raw) return null
   const result = parseToolResult(raw)
   if (!isPlainObject(result)) return null
+  const handoff = buildHandoffView(raw)
+  if (handoff) return handoff
   const interfaceCode = typeof result.interfaceCode === 'string' ? result.interfaceCode : ''
   const meta = interfaceCode ? interfaceMeta.get(interfaceCode) : undefined
+  const truncated = result.truncated === true || /…\[结果已截断\]\s*$/.test(raw)
   const view: AiView = {
     type: 'empty',
     success: result.success !== false && !result.error,
     interfaceCode,
-    interfaceName: meta?.name || interfaceCode || undefined,
+    interfaceName: meta?.name || (typeof result.interfaceName === 'string' ? result.interfaceName : '')
+      || interfaceCode || undefined,
     message: typeof result.message === 'string' ? result.message : '',
     latency: typeof result.latencyMs === 'number' ? `${result.latencyMs} ms` : ''
   }
-  if (/…\[结果已截断\]\s*$/.test(raw)) {
-    view.message = [view.message, '结果较长，已截断显示'].filter(Boolean).join(' · ')
+  if (truncated) {
+    view.truncated = true
+    const warning = typeof result.warning === 'string' && result.warning
+      ? result.warning
+      : '数据量较大，仅展示部分结果；完整数据请通过对应业务菜单导出'
+    view.message = [view.message, warning].filter(Boolean).join(' · ')
   }
   if (!view.success) return view
   // outputSchema 是唯一出参口径：先按定义裁剪，未声明子结构的字段保持原样
@@ -375,9 +403,67 @@ export function buildInvokeView(raw?: string | null): AiView | null {
   return view
 }
 
+/** 批量只读查询：每个调用一个结果卡片；失败项只展示提示。 */
+export function buildBatchQueryViews(raw?: string | null): AiView[] {
+  if (!raw) return []
+  const result = parseToolResult(raw)
+  if (!isPlainObject(result)) return []
+  if (result.handoff) {
+    const handoff = buildHandoffView(raw)
+    return handoff ? [handoff] : []
+  }
+  const results = Array.isArray(result.results) ? result.results : []
+  if (!results.length) {
+    return [{
+      type: 'empty',
+      success: result.success !== false && !result.error,
+      message: typeof result.message === 'string' && result.message
+        ? result.message
+        : typeof result.error === 'string' ? String(result.error) : '查询完成，暂无数据'
+    }]
+  }
+  return results.map((item: any): AiView => {
+    const label = (typeof item?.label === 'string' && item.label)
+      || (typeof item?.interfaceName === 'string' && item.interfaceName)
+      || (typeof item?.interfaceCode === 'string' && item.interfaceCode)
+      || '查询结果'
+    if (item?.success === false) {
+      return {
+        type: 'empty',
+        success: false,
+        title: label,
+        interfaceName: label,
+        message: (typeof item?.message === 'string' && item.message) || String(item?.error || '查询失败'),
+        truncated: item?.truncated === true
+      }
+    }
+    const view = buildInvokeView(JSON.stringify({
+      ...item,
+      success: true,
+      interfaceCode: item?.interfaceCode,
+      interfaceName: item?.interfaceName || label,
+      message: item?.message,
+      data: item?.data,
+      truncated: item?.truncated === true
+    }))
+    if (view) {
+      if (!view.title) view.title = label
+      view.interfaceName = view.interfaceName || label
+      return view
+    }
+    return {
+      type: 'empty',
+      success: true,
+      title: label,
+      interfaceName: label,
+      message: '查询完成，暂无数据'
+    }
+  })
+}
+
 /** 直返查询不再经过模型转述，空结果需要给出明确文案，避免卡片一片空白。 */
 function fillEmptyMessage(view: AiView) {
-  if (view.success && view.type === 'empty' && !view.message) {
+  if (view.success && view.type === 'empty' && !view.message && !view.truncated) {
     view.message = '查询完成，暂无数据'
   }
 }
@@ -407,16 +493,21 @@ export function buildExportView(raw?: string | null): AiView | null {
     }
   }
   if (typeof result.url !== 'string' || !result.url) return null
+  const baseMessage = typeof result.message === 'string' && result.message
+    ? result.message
+    : '文件已生成，点击文件名下载'
+  const summary = [
+    Array.isArray(result.queries) ? `${result.queries.length} 个查询` : '',
+    typeof result.rows === 'number' ? `共 ${result.rows} 行` : ''
+  ].filter(Boolean).join(' · ')
   return {
     type: 'file',
     success: true,
     title: '导出文件',
     interfaceName: '导出文件',
-    message: typeof result.message === 'string' && result.message
-      ? result.message
-      : '文件已生成，点击文件名下载',
+    message: summary ? `${baseMessage} · ${summary}` : baseMessage,
     files: [{
-      name: typeof result.fileName === 'string' && result.fileName ? result.fileName : 'AI 分析结果',
+      name: typeof result.fileName === 'string' && result.fileName ? result.fileName : 'AI 导出文件',
       url: assetUrl(result.url),
       size: formatExportSize(result.size)
     }]

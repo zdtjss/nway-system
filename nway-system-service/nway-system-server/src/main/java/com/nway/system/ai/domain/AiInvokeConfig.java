@@ -36,6 +36,22 @@ public class AiInvokeConfig {
 
     private Integer maxResponseBytes;
 
+    /**
+     * 可选分页元数据：导出链路识别分页参数用；未配置时按 inputSchema 自动识别。
+     */
+    private Pagination pagination;
+
+    @Data
+    public static class Pagination {
+        /** PAGE：按页循环；NONE：单次取回。为空时自动识别。 */
+        private String mode;
+        private String pageParam;
+        private String sizeParam;
+        private Integer startPage;
+        private Integer pageSize;
+        private Integer maxPages;
+    }
+
     @Data
     public static class Response {
         private String codePath;

@@ -3,17 +3,15 @@ package com.nway.system.ai.service;
 import com.nway.system.ai.web.model.AiChatRequest;
 import com.nway.system.ai.web.model.AiConfirmRequest;
 import com.nway.system.ai.web.model.AiConversationVo;
-import com.nway.system.ai.web.model.AiFileVo;
 import com.nway.system.ai.web.model.AiMessageVo;
 import com.alibaba.fastjson2.JSON;
-import com.alibaba.fastjson2.JSONObject;
 import com.nway.system.ai.domain.AiPageContext;
 import com.nway.system.ai.domain.AiUserContext;
 import com.nway.system.common.exception.NwaySystemException;
 import com.nway.system.common.tenant.TenantUtil;
 import com.nway.system.ai.entity.AiConversation;
-import com.nway.system.ai.tool.ExportAnalysisTool;
 import com.nway.system.ai.tool.QueryInterfaceTool;
+import com.nway.system.ai.tool.QueryInterfacesTool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEndEvent;
 import io.agentscope.core.event.AgentEvent;
@@ -78,16 +76,6 @@ public class AiChatService {
     /** 页面上下文标记：写入模型输入，历史展示时据此过滤，避免大段页面文本出现在聊天气泡 */
     private static final String PAGE_CONTEXT_MARKER = "【当前页面上下文】";
 
-    /** 附件清单标记：清单是写给模型的文本，历史展示时还原为附件块 */
-    private static final String FILE_MANIFEST_MARKER = "【对话附件】";
-
-    /** 图片附件标记：模型输入里的图片占位文本，历史展示时由附件块代替 */
-    private static final String IMAGE_MARKER = "【图片附件】";
-
-    private static final String ATTACHMENT_BLOCK = "attachments";
-
-    private static final Pattern MANIFEST_FILE_ID = Pattern.compile("fileId=([^\\s；;）)]+)");
-
     private static final int MAX_PAGE_CONTEXT_CHARS = 20_000;
 
     private final AiAgentFactory agentFactory;
@@ -95,17 +83,20 @@ public class AiChatService {
     private final AiConversationService conversationService;
     private final AiChatFileService fileService;
     private final AiMessageService messageService;
-    private final AiExportService exportService;
+    private final AiConversationHistoryReader historyReader;
+    private final AiLimits limits;
 
     public AiChatService(AiAgentFactory agentFactory, AiPromptService promptService,
                          AiConversationService conversationService, AiChatFileService fileService,
-                         AiMessageService messageService, AiExportService exportService) {
+                         AiMessageService messageService, AiConversationHistoryReader historyReader,
+                         AiLimits limits) {
         this.agentFactory = agentFactory;
         this.promptService = promptService;
         this.conversationService = conversationService;
         this.fileService = fileService;
         this.messageService = messageService;
-        this.exportService = exportService;
+        this.historyReader = historyReader;
+        this.limits = limits;
     }
 
     public AiConversation prepare(AiUserContext user, AiChatRequest request) {
@@ -137,7 +128,8 @@ public class AiChatService {
             conversationService.generateTitle(conversation.getId(), user, request.getMessage());
         }
         HarnessAgent agent = agent(user, request.getModelId());
-        RuntimeContext context = runtimeContext(user, conversation);
+        RuntimeContext context = runtimeContext(user, conversation,
+                new AiTurnBudget(limits.getTurnAnalysisMaxChars()));
 
         List<ContentBlock> blocks = new ArrayList<>();
         if (StringUtils.isNotBlank(request.getMessage())) {
@@ -239,7 +231,8 @@ public class AiChatService {
         HarnessAgent agent = agent(user, request.getModelId());
         AtomicBoolean lengthLimited = new AtomicBoolean(false);
         Flux<AgentEvent> events = instrument(retryWhenSessionBusy(
-                        () -> agent.streamEvents(msg, runtimeContext(user, conversation))),
+                        () -> agent.streamEvents(msg, runtimeContext(user, conversation,
+                                new AiTurnBudget(limits.getTurnAnalysisMaxChars())))),
                 user, conversation, "confirm",
                 agentFactory.maxOutputTokens(user, request.getModelId()), lengthLimited);
         return new ChatStream(conversation, events, lengthLimited);
@@ -411,129 +404,16 @@ public class AiChatService {
             messages = transcript(user, conversation);
             if (!messages.isEmpty()) {
                 messageService.save(conversationId, user.getEmployeeId(), messages);
+                for (AiMessageVo message : messages) {
+                    historyReader.restore(user, message);
+                }
             }
-        }
-        for (AiMessageVo message : messages) {
-            restoreAttachments(message, user);
-            restoreExportLinks(message, user);
+        } else {
+            for (AiMessageVo message : messages) {
+                historyReader.restore(user, message);
+            }
         }
         return messages;
-    }
-
-    /**
-     * 导出工具的结果里带短时下载票据，历史消息读取时按 fileId 重新签发，避免旧链接过期。
-     */
-    private void restoreExportLinks(AiMessageVo message, AiUserContext user) {
-        List<Map<String, Object>> blocks = message.getBlocks();
-        if (blocks == null || blocks.isEmpty()) {
-            return;
-        }
-        String tenant = user == null ? null : user.effectiveTenantCode();
-        Runnable action = () -> refreshExportBlocks(message, blocks);
-        if (StringUtils.isBlank(tenant)) {
-            action.run();
-        } else {
-            TenantUtil.runAsTenant(tenant, action);
-        }
-    }
-
-    private void refreshExportBlocks(AiMessageVo message, List<Map<String, Object>> blocks) {
-        for (Map<String, Object> block : blocks) {
-            if (!"tool_use".equals(block.get("type"))
-                    || !ExportAnalysisTool.NAME.equals(block.get("name"))) {
-                continue;
-            }
-            Object raw = block.get("result");
-            if (!(raw instanceof String result) || StringUtils.isBlank(result)) {
-                continue;
-            }
-            try {
-                JSONObject json = JSON.parseObject(result);
-                if (json == null || StringUtils.isBlank(json.getString("fileId"))) {
-                    continue;
-                }
-                String url = exportService.downloadUrl(json.getString("fileId"));
-                if (url == null) {
-                    json.remove("url");
-                    json.put("error", "FILE_EXPIRED");
-                    json.put("message", "导出文件已过期或已被清理，请重新导出");
-                } else {
-                    json.put("url", url);
-                }
-                block.put("result", json.toJSONString());
-            } catch (Exception e) {
-                log.debug("导出文件下载地址刷新失败 messageId={} error={}", message.getId(), e.getMessage());
-            }
-        }
-    }
-
-    /**
-     * 把历史消息中的附件清单还原为附件块，并重新生成预览地址。
-     * <p>
-     * 清单与图片占位是写给模型的文本，直接展示会让用户看到大段技术说明；
-     * 文件已被删除时保持原文本，避免消息气泡变空。
-     */
-    private void restoreAttachments(AiMessageVo message, AiUserContext user) {
-        List<Map<String, Object>> blocks = message.getBlocks();
-        if (blocks == null || blocks.isEmpty()) {
-            return;
-        }
-        List<Map<String, Object>> files = null;
-        for (Map<String, Object> block : blocks) {
-            if (!"text".equals(block.get("type"))) {
-                continue;
-            }
-            String text = String.valueOf(block.get("text"));
-            if (text.startsWith(FILE_MANIFEST_MARKER)) {
-                files = attachmentFiles(text, user);
-                if (!files.isEmpty()) {
-                    break;
-                }
-            }
-        }
-        if (files == null || files.isEmpty()) {
-            return;
-        }
-        List<Map<String, Object>> restored = new ArrayList<>(blocks.size());
-        for (Map<String, Object> block : blocks) {
-            if ("text".equals(block.get("type"))) {
-                String text = String.valueOf(block.get("text"));
-                if (text.startsWith(FILE_MANIFEST_MARKER) || text.startsWith(IMAGE_MARKER)) {
-                    continue;
-                }
-            }
-            restored.add(block);
-        }
-        Map<String, Object> node = new LinkedHashMap<>();
-        node.put("type", ATTACHMENT_BLOCK);
-        node.put("files", files);
-        restored.add(node);
-        message.setBlocks(restored);
-    }
-
-    /** 从附件清单里按出现顺序取出 fileId，再补齐文件名、大小与新的预览地址。 */
-    private List<Map<String, Object>> attachmentFiles(String manifest, AiUserContext user) {
-        Set<String> fileIds = new LinkedHashSet<>();
-        Matcher matcher = MANIFEST_FILE_ID.matcher(manifest);
-        while (matcher.find()) {
-            fileIds.add(matcher.group(1));
-        }
-        List<Map<String, Object>> files = new ArrayList<>(fileIds.size());
-        for (String fileId : fileIds) {
-            AiFileVo file = fileService.describe(fileId, user);
-            if (file == null) {
-                continue;
-            }
-            Map<String, Object> node = new LinkedHashMap<>();
-            node.put("fileId", file.getFileId());
-            node.put("name", file.getName());
-            node.put("size", file.getSize());
-            node.put("mime", file.getMime());
-            node.put("kind", file.getKind());
-            node.put("previewUrl", file.getPreviewUrl());
-            files.add(node);
-        }
-        return files;
     }
 
     /**
@@ -626,7 +506,8 @@ public class AiChatService {
                         node.put("input", toolUse.getInput());
                         blocks.add(node);
                         toolBlocks.put(toolUse.getId(), node);
-                        if (QueryInterfaceTool.NAME.equals(toolUse.getName())) {
+                        if (QueryInterfaceTool.NAME.equals(toolUse.getName())
+                                || QueryInterfacesTool.NAME.equals(toolUse.getName())) {
                             directTools.add(node);
                         }
                     }
@@ -819,10 +700,18 @@ public class AiChatService {
     }
 
     private RuntimeContext runtimeContext(AiUserContext user, AiConversation conversation) {
-        return RuntimeContext.builder()
+        return runtimeContext(user, conversation, null);
+    }
+
+    private RuntimeContext runtimeContext(AiUserContext user, AiConversation conversation,
+                                          AiTurnBudget budget) {
+        RuntimeContext.Builder builder = RuntimeContext.builder()
                 .sessionId(conversation.getId())
                 .userId(user.getEmployeeId())
-                .put(AiUserContext.class, user)
-                .build();
+                .put(AiUserContext.class, user);
+        if (budget != null) {
+            builder.put(AiTurnBudget.class, budget);
+        }
+        return builder.build();
     }
 }

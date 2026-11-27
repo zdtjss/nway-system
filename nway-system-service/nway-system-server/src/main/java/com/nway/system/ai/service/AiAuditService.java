@@ -4,6 +4,7 @@ import com.nway.system.ai.domain.AiInvokeResult;
 import com.nway.system.ai.domain.AiUserContext;
 import com.nway.system.audit.dao.AuditLogDao;
 import com.nway.system.audit.entity.AuditLog;
+import com.alibaba.fastjson2.JSON;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -37,6 +38,16 @@ public class AiAuditService {
         AuditLog entity = base(user, confirmed ? "AI_CONFIRM_INTERFACE" : "AI_REJECT_INTERFACE",
                 "ai_interface:" + interfaceCode);
         entity.setResponseStatus(confirmed ? 200 : 403);
+        insert(entity);
+    }
+
+    /**
+     * 数据导出审计：记录每个查询的接口、行数、页数与完整性。
+     */
+    public void recordDataExport(AiUserContext user, Map<String, Object> summary) {
+        AuditLog entity = base(user, "AI_EXPORT_DATA", "ai_export:data");
+        entity.setRequestParams(AiLogs.truncate(JSON.toJSONString(summary), 2000));
+        entity.setResponseStatus(200);
         insert(entity);
     }
 

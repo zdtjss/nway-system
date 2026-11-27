@@ -8,6 +8,8 @@ export interface UiTool {
   result?: string
   /** 调用结果解析成功时的结构化视图，未解析时回退展示原文 */
   view?: AiView | null
+  /** 批量查询等场景的多结果视图；为空时回退 view */
+  views?: AiView[]
 }
 
 export interface UiMessage {

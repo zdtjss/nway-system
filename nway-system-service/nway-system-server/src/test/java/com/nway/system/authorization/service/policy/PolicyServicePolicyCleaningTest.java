@@ -10,6 +10,7 @@ import com.nway.system.portal.dao.AppDao;
 import com.nway.system.portal.entity.App;
 import com.nway.system.portal.dao.MenuDao;
 import com.nway.system.authorization.dao.PermissionPolicyDao;
+import com.nway.system.authorization.dao.ResourceDao;
 import com.nway.system.authorization.entity.PermissionPolicy;
 import com.nway.system.identity.dao.SysPositionDao;
 import com.nway.system.identity.dao.RoleDao;
@@ -43,6 +44,7 @@ class PolicyServicePolicyCleaningTest {
     private final PermissionPolicyDao policyDao = mock(PermissionPolicyDao.class);
     private final AppDao appDao = mock(AppDao.class);
     private final MenuDao menuDao = mock(MenuDao.class);
+    private final ResourceDao resourceDao = mock(ResourceDao.class);
     private final RoleDao roleDao = mock(RoleDao.class);
     private final UserDao userDao = mock(UserDao.class);
     private final SysPositionDao positionDao = mock(SysPositionDao.class);
@@ -63,6 +65,7 @@ class PolicyServicePolicyCleaningTest {
         ReflectionTestUtils.setField(service, "policyDao", policyDao);
         ReflectionTestUtils.setField(service, "appDao", appDao);
         ReflectionTestUtils.setField(service, "menuDao", menuDao);
+        ReflectionTestUtils.setField(service, "resourceDao", resourceDao);
         ReflectionTestUtils.setField(service, "roleDao", roleDao);
         ReflectionTestUtils.setField(service, "userDao", userDao);
         ReflectionTestUtils.setField(service, "positionDao", positionDao);
@@ -223,10 +226,27 @@ class PolicyServicePolicyCleaningTest {
     void orphanResourceRejected() {
         when(userDao.getByEmployeeId("oa")).thenReturn(user("oa", "OA"));
         when(menuDao.existsPageResource("wform", "wform:data")).thenReturn(false);
+        when(resourceDao.exists("wform", "wform:data")).thenReturn(false);
 
         assertThatThrownBy(() -> service.save(policy("USER", "oa", "OA")))
                 .isInstanceOf(NwaySystemException.class)
                 .hasMessageContaining("资源不存在");
+    }
+
+    @Test
+    @DisplayName("资源登记台已登记的非菜单资源（如 AI 接口 ai:xxx）：允许写入")
+    void catalogResourceWithoutMenuAllowed() {
+        when(userDao.getByEmployeeId("oa")).thenReturn(user("oa", "OA"));
+        when(menuDao.existsPageResource("nway-system", "ai:bpm_my_task")).thenReturn(false);
+        when(resourceDao.exists("nway-system", "ai:bpm_my_task")).thenReturn(true);
+
+        PermissionPolicy p = policy("USER", "oa", "OA");
+        p.setAppCode("nway-system");
+        p.setResourceCode("ai:bpm_my_task");
+
+        service.save(p);
+
+        assertThat(insertedPolicy().getResourceCode()).isEqualTo("ai:bpm_my_task");
     }
 
     @Test

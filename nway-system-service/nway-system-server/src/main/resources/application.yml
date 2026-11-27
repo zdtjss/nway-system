@@ -129,6 +129,29 @@ nway:
       lookup-options-enabled: ${AI_LOOKUP_OPTIONS_ENABLED:false}
       # 可选工具：按 fileId 按需解析并读取对话附件文本（关闭后对话无法读取文件内容）
       read-file-enabled: ${AI_READ_FILE_ENABLED:true}
+      # 批量只读查询开关：关闭后回退到单次 query_interface
+      query-batch-enabled: ${AI_QUERY_BATCH_ENABLED:true}
+      # 单次批量查询最多接口数
+      query-batch-max-calls: ${AI_QUERY_BATCH_MAX_CALLS:5}
+      # 会话导出/已有结果导出开关
+      conversation-export-enabled: ${AI_CONVERSATION_EXPORT_ENABLED:true}
+    # 查询/分析/展示的体量阈值：由服务端实测判定，不交给模型估算
+    limits:
+      display-max-rows: ${AI_DISPLAY_MAX_ROWS:200}
+      display-max-chars: ${AI_DISPLAY_MAX_CHARS:200000}
+      analysis-max-chars: ${AI_ANALYSIS_MAX_CHARS:8000}
+      analysis-max-rows: ${AI_ANALYSIS_MAX_ROWS:100}
+      analysis-max-total: ${AI_ANALYSIS_MAX_TOTAL:200}
+      turn-analysis-max-chars: ${AI_TURN_ANALYSIS_MAX_CHARS:24000}
+    export:
+      # 大数据确定性导出：分页、上限与完整性对账
+      data-page-size: ${AI_EXPORT_PAGE_SIZE:200}
+      data-max-rows: ${AI_EXPORT_MAX_ROWS:200000}
+      data-max-pages: ${AI_EXPORT_MAX_PAGES:1000}
+      data-max-bytes: ${AI_EXPORT_MAX_BYTES:209715200}
+      docx-max-rows: ${AI_EXPORT_DOCX_MAX_ROWS:2000}
+      conversation-max-messages: ${AI_EXPORT_CONVERSATION_MAX_MESSAGES:2000}
+      conversation-max-chars: ${AI_EXPORT_CONVERSATION_MAX_CHARS:500000}
   message:
     mail:
       from: ${MAIL_FROM:}

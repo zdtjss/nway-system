@@ -11,6 +11,7 @@ import com.nway.system.portal.dao.AppDao;
 import com.nway.system.portal.entity.App;
 import com.nway.system.portal.dao.MenuDao;
 import com.nway.system.authorization.dao.PermissionPolicyDao;
+import com.nway.system.authorization.dao.ResourceDao;
 import com.nway.system.authorization.entity.PermissionPolicy;
 import com.nway.system.identity.dao.SysPositionDao;
 import com.nway.system.identity.dao.SysUserPositionDao;
@@ -69,6 +70,8 @@ public class PolicyService implements PolicyLoader {
     private AppDao appDao;
     @Autowired
     private MenuDao menuDao;
+    @Autowired
+    private ResourceDao resourceDao;
     @Autowired
     private UserRoleDao userRoleDao;
     @Autowired
@@ -252,8 +255,15 @@ public class PolicyService implements PolicyLoader {
     }
 
     /**
-     * 资源存在性校验：策略的 {@code (app_code, resource_code)} 必须对应一个已登记的 PAGE 菜单。
+     * 资源存在性校验：策略的 {@code (app_code, resource_code)} 必须对应一个已登记的资源。
      * <p>
+     * 资源有两种合法登记方式，满足其一即可：
+     * <ul>
+     *   <li>{@code sys_menu} 中的 PAGE 菜单（导航页面权限）；</li>
+     *   <li>{@code sys_resource} 资源目录（API / CAPABILITY 等非菜单资源，如 AI 接口
+     *       {@code ai:{interfaceCode}}、{@code kql:workItemList}）——这类策略直接参与
+     *       决策判定，同样不能是孤儿。</li>
+     * </ul>
      * 否则写入的策略永不生效（孤儿策略），表现为"配置成功但无权限"，极难排查；且资源码改名后
      * 存量策略会静默失效，此校验把这类误配挡在写入时。通配符 {@code '*'} 表示该应用全部资源，
      * 不参与校验。
@@ -265,10 +275,11 @@ public class PolicyService implements PolicyLoader {
         if (WILDCARD_RESOURCE_CODE.equals(resourceCode)) {
             return;
         }
-        boolean exists = TenantUtil.callAsSystem(() -> menuDao.existsPageResource(appCode, resourceCode));
+        boolean exists = TenantUtil.callAsSystem(() -> menuDao.existsPageResource(appCode, resourceCode)
+                || resourceDao.exists(appCode, resourceCode));
         if (!exists) {
             throw new NwaySystemException("资源不存在：" + appCode + ":" + resourceCode
-                    + "，请先在菜单管理中登记该资源的 PAGE（或使用通配符 '*'）");
+                    + "，请先在菜单管理或资源登记台登记（或使用通配符 '*'）");
         }
     }
 

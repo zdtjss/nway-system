@@ -149,15 +149,48 @@ const currentAppCode = ref('')
 
 /** 应用 -> (resourceCode -> 动作列表)：动作以资源目录为准，不再依赖菜单 BTN */
 const resourceActionsCache = ref<Record<string, Record<string, string[]>>>({})
+/** 应用 -> (resourceCode -> 资源类型)：用于区分菜单资源与非菜单资源（API/CAPABILITY 等） */
+const resourceTypeCache = ref<Record<string, Record<string, string>>>({})
+
+/** 资源目录中的非菜单资源类型：这类策略不承载菜单，不在本弹窗展示 */
+const NON_MENU_RESOURCE_TYPES = new Set(['API', 'CAPABILITY', 'DATA', 'FIELD'])
 
 async function ensureResourceActions(appCode: string) {
     if (!appCode || resourceActionsCache.value[appCode]) return
     const res = await queryGrantableResources(appCode)
     const map: Record<string, string[]> = {}
+    const typeMap: Record<string, string> = {}
     for (const r of res.data || []) {
         map[r.resourceCode] = (r.actions || []).map(a => a.action)
+        typeMap[r.resourceCode] = r.resourceType
     }
     resourceActionsCache.value[appCode] = map
+    resourceTypeCache.value[appCode] = typeMap
+}
+
+function isNonMenuResource(appCode: string, resourceCode: string): boolean {
+    const type = resourceTypeCache.value[appCode]?.[resourceCode]
+    return !!type && NON_MENU_RESOURCE_TYPES.has(type)
+}
+
+/**
+ * 非菜单资源（AI 接口 CAPABILITY、API 等）的存量策略：不在弹窗展示；
+ * 保存是替换式写入，必须原样带回，否则会误删这些授权。
+ */
+const preservedPolicies = ref<PermissionPolicy[]>([])
+
+function toSavePolicy(p: PermissionPolicy): PermissionPolicy {
+    return {
+        subjectType: 'ROLE',
+        subjectId: props.roleId,
+        appCode: p.appCode,
+        resourceCode: p.resourceCode,
+        actions: p.actions ?? null,
+        dataScope: p.dataScope || 'SELF',
+        scopeDeptIds: p.scopeDeptIds ?? null,
+        scopeCondition: p.scopeCondition ?? null,
+        priority: p.priority ?? 0
+    }
 }
 
 /** 按应用加载菜单（带缓存；只取「目标角色租户 + public」的菜单） */
@@ -311,6 +344,7 @@ onMounted(async () => {
         await Promise.all(Array.from(appCodes).map(code => ensureResourceActions(code)))
 
         const grouped: Record<string, Record<string, SelectedResource>> = {}
+        preservedPolicies.value = []
         for (const p of policies) {
             const appCode = p.appCode
             if (!grouped[appCode]) grouped[appCode] = {}
@@ -337,6 +371,12 @@ onMounted(async () => {
                 }
             } else {
                 const page = list.find(m => m.type === 'PAGE' && m.resourceCode === p.resourceCode)
+                if (!page && isNonMenuResource(appCode, p.resourceCode)) {
+                    // 非菜单资源（如 AI 接口 ai:{interfaceCode}）不属于菜单授权范围：
+                    // 不展示以免被误判为“不会生效”，保存时原样带回
+                    preservedPolicies.value.push(toSavePolicy(p))
+                    continue
+                }
                 grouped[appCode][p.resourceCode] = {
                     ...base,
                     resourceCode: p.resourceCode,
@@ -383,7 +423,8 @@ async function handleSave() {
 
     saving.value = true
     try {
-        await saveRolePolicies(props.roleId, policyList)
+        // 非菜单资源（AI 接口等）的存量策略随保存一起写回，避免替换式保存误删
+        await saveRolePolicies(props.roleId, [...policyList, ...preservedPolicies.value])
         ElMessage.success('策略保存成功')
         emit('close')
     } finally {

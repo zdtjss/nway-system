@@ -34,7 +34,10 @@ import java.util.stream.Collectors;
 @Slf4j
 public class GetInterfaceConfigTool extends ToolBase {
 
-    public static final String NAME = "get_interface_config";
+    public static final String NAME = "search_interfaces";
+
+    /** 历史消息中的旧工具名：前端继续识别，但不再注册给新对话 */
+    public static final String LEGACY_NAME = "get_interface_config";
 
     private final AiInterfaceService interfaceService;
     private final AiInterfaceSearchService searchService;
@@ -51,7 +54,7 @@ public class GetInterfaceConfigTool extends ToolBase {
                         查询业务接口配置。二选一：
                         1) query：直接传用户原始意图（不要改写成接口名），系统会做规则+语义检索；
                         2) interfaceCode：精确读取某个接口的完整入参/出参定义。
-                        返回的 inputSchema 决定 invoke_interface 的 args 字段；不要臆造字段。
+                        返回的 inputSchema 决定 query_interfaces / invoke_interface 的 args 字段；不要臆造字段。
                         """)
                 .inputSchema(inputSchema())
                 .readOnly(true)
@@ -93,7 +96,7 @@ public class GetInterfaceConfigTool extends ToolBase {
             }
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("candidates", List.of(candidate(config, 1.0)));
-            body.put("next", "调用 query_interface（默认直返）或 invoke_interface（分析/多步/写操作），args 只包含 inputSchema 中的字段；回答只使用 outputSchema 定义的字段");
+            body.put("next", "调用 query_interfaces（只读展示）、invoke_interface（分析/多步/写操作）或 export_query_data（大数据导出），args 只包含 inputSchema 中的字段；回答只使用 outputSchema 定义的字段");
             log.info("工具调用完成 tool={} session={} toolCallId={} interfaceCode={} candidates=1 elapsed={}ms",
                     NAME, sessionId, toolCallId, interfaceCode, System.currentTimeMillis() - start);
             return ToolResultBlock.text(JSON.toJSONString(body));
@@ -128,9 +131,9 @@ public class GetInterfaceConfigTool extends ToolBase {
         body.put("candidates", candidates);
         if (lowConfidence) {
             body.put("lowConfidence", true);
-            body.put("next", "候选置信度低，不要调用 query_interface 或 invoke_interface；先向用户确认业务对象，或说明暂未找到对应接口");
+            body.put("next", "候选置信度低，不要调用 query_interfaces、invoke_interface 或 export_query_data；先向用户确认业务对象，或说明暂未找到对应接口");
         } else {
-            body.put("next", "选择最匹配的 interfaceCode，补充用户已明确的信息后调用：一次查询默认用 query_interface；需要分析、多步调用或写操作时用 invoke_interface；缺失必填字段时先向用户追问");
+            body.put("next", "选择最匹配的 interfaceCode，补充用户已明确的信息后调用：只看结果用 query_interfaces；需要分析、多步调用或写操作用 invoke_interface；导出原始数据用 export_query_data；缺失必填字段时先向用户追问");
         }
         log.info("工具调用完成 tool={} session={} toolCallId={} query={} candidates={} top={} lowConfidence={} elapsed={}ms",
                 NAME, sessionId, toolCallId, AiLogs.truncate(searchText, 120), candidates.size(),
@@ -228,7 +231,7 @@ public class GetInterfaceConfigTool extends ToolBase {
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("query", Map.of(
                 "type", "string",
-                "description", "用户的原始自然语言意图，例如「提交访厂申请、查询待办」，不要改写成接口名"));
+                "description", "用户的原始自然语言意图，例如「提交请假申请、查询待办」，不要改写成接口名"));
         properties.put("interfaceCode", Map.of(
                 "type", "string",
                 "description", "已知的接口编码，精确读取配置"));

@@ -3,9 +3,9 @@ import { ElMessage } from 'element-plus'
 import { getMessages, mergeAssistantMessages, streamChat, uploadChatFile } from '@/api/ai'
 import { rememberInterfaceConfig, splitViewSegments } from '@/utils/aiView'
 import {
-    CONFIG_TOOL,
     INVOKE_TOOL,
-    buildToolView,
+    buildToolViews,
+    isConfigTool,
     isResultTool,
     restoreCompletedTools
 } from '@/utils/aiTool'
@@ -131,7 +131,7 @@ export function useAiChatSession({ input, attachments, scrollToBottom, followTai
                 }
                 break
             case 'tool.result.delta':
-                if (event.name === CONFIG_TOOL) {
+                if (isConfigTool(event.name)) {
                     const key = event.toolCallId || ''
                     aiPendingConfig.set(key, (aiPendingConfig.get(key) || '') + (event.delta || ''))
                 } else if (isResultTool(event.name)) {
@@ -141,7 +141,7 @@ export function useAiChatSession({ input, attachments, scrollToBottom, followTai
                 break
             case 'tool.result.end':
                 target.toolTip = ''
-                if (event.name === CONFIG_TOOL) {
+                if (isConfigTool(event.name)) {
                     const key = event.toolCallId || ''
                     rememberInterfaceConfig(aiPendingConfig.get(key) || '')
                     aiPendingConfig.delete(key)
@@ -149,7 +149,9 @@ export function useAiChatSession({ input, attachments, scrollToBottom, followTai
                     const tool = target.tools.find((item) => item.id === event.toolCallId)
                     if (tool) {
                         tool.status = event.state === 'ERROR' || event.state === 'DENIED' ? 'error' : 'done'
-                        tool.view = buildToolView(tool.name, tool.result)
+                        const views = buildToolViews(tool.name, tool.result)
+                        tool.views = views
+                        tool.view = views[0] || null
                     }
                 }
                 break
@@ -370,12 +372,13 @@ export function useAiChatSession({ input, attachments, scrollToBottom, followTai
                 ui.attachments.push(...(block.files || []))
             } else if (block.type === 'tool_use') {
                 const name = block.name || INVOKE_TOOL
-                if (name === CONFIG_TOOL) {
+                if (isConfigTool(name)) {
                     rememberInterfaceConfig(block.result)
                     return
                 }
                 const result = block.result || ''
-                let view = isResultTool(name) ? buildToolView(name, result) : null
+                const views = isResultTool(name) ? buildToolViews(name, result) : []
+                let view = views[0] || null
                 if (isResultTool(name) && !view) {
                     // 简易面板不展开原始报文：无结果说明调用未完成，有结果则提示去完整对话查看
                     view = {
@@ -393,7 +396,8 @@ export function useAiChatSession({ input, attachments, scrollToBottom, followTai
                         ? 'error'
                         : result ? 'done' : 'interrupted',
                     result,
-                    view
+                    view,
+                    views
                 })
             }
         })

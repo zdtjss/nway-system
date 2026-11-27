@@ -193,7 +193,7 @@
           <el-col :span="24">
             <el-form-item label="描述">
               <el-input v-model="form.description" type="textarea" :rows="2"
-                        placeholder="可选。面向模型的场景/动作描述，例如：提交访厂体验申请并发起审批流程" />
+                        placeholder="可选。面向模型的场景/动作描述，例如：提交请假申请并发起审批流程" />
             </el-form-item>
           </el-col>
           <el-col :span="8">
@@ -260,7 +260,7 @@
           <el-col :span="24">
             <el-form-item label="用户表达示例">
               <el-input v-model="examplesText" type="textarea" :rows="2"
-                        placeholder="每行一条，例如：帮我提交访厂申请" />
+                        placeholder="每行一条，例如：帮我提交请假申请" />
             </el-form-item>
           </el-col>
         </el-row>

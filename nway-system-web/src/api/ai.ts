@@ -214,6 +214,15 @@ export interface AiMessage {
   blocks: AiMessageBlock[]
 }
 
+/** 导出结果：文件已落文件中心，url 为带短时票据的下载地址 */
+export interface AiExportVo {
+  fileId: string
+  fileName: string
+  size?: number
+  url: string
+  format?: string
+}
+
 /**
  * 历史消息按模型轮次落库：一次提问会产生多条助手消息，每轮都带自己的思考与工具调用。
  * 展示前合并相邻的助手消息，让历史记录与实时流式一样，一次提问只出现一张回复卡片、一个思考过程。
@@ -404,6 +413,11 @@ export const createConversation = (message?: string) =>
 
 export const getMessages = (conversationId: string) =>
   http.get<Result<AiMessage[]>>(`/ai/conversations/${conversationId}/messages`).then((r: any) => r.data)
+
+/** 导出会话记录：后端读取 ai_message 直接生成文件，不重新调用大模型分析 */
+export const exportConversation = (conversationId: string, body?: Record<string, any>) =>
+  http.post<Result<AiExportVo>>(`/ai/conversations/${conversationId}/export`, body || {})
+    .then((r: any) => r.data)
 
 export const renameConversation = (id: string, title: string) =>
   http.patch<Result<void>>(`/ai/conversations/${id}`, { title }).then((r: any) => r.data)
