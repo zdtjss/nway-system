@@ -19,11 +19,6 @@
             </div>
           </div>
         </div>
-        <button type="button" class="chat-export" :disabled="!activeId || streaming || exporting"
-                title="导出当前会话记录" @click="exportCurrentConversation">
-          <el-icon><Download /></el-icon>
-          <span>导出对话</span>
-        </button>
       </header>
 
       <div ref="scrollEl" class="message-scroll" @scroll="trackFollowScroll">
@@ -86,9 +81,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ChatDotRound, Download } from '@element-plus/icons-vue'
+import { ChatDotRound } from '@element-plus/icons-vue'
 import {
-  assetUrl, cancelChat, deleteConversation, deletePrompt, exportConversation, extractPrompt, getMessages,
+  assetUrl, cancelChat, deleteConversation, deletePrompt, extractPrompt, getMessages,
   listChatModels, listPrompts, mergeAssistantMessages, renameConversation, savePrompt, streamChat, streamConfirm,
   updatePrompt,
   type AiChatModelVo, type AiConversationVo, type AiFileVo, type AiMessage, type AiPromptVo, type ChatEvent
@@ -196,8 +191,6 @@ const prompts = ref<AiPromptVo[]>([])
 const quickPrompts = computed(() => prompts.value.filter((prompt) => quickPromptIds.value.includes(prompt.id)))
 const promptSaving = ref(false)
 const extracting = ref(false)
-/** 会话导出进行中：避免重复提交 */
-const exporting = ref(false)
 
 const {
   aiHistoryOpen: historyPopover,
@@ -419,26 +412,6 @@ async function onConvCommand(command: string, conv: AiConversationVo) {
     } catch (e) {
       // 取消
     }
-  }
-}
-
-// ==================== 会话导出 ====================
-
-/** 导出当前会话：直接读取已落库消息生成文件，不重新调用模型分析。 */
-async function exportCurrentConversation() {
-  if (!activeId.value) {
-    ElMessage.warning('当前还没有可导出的会话')
-    return
-  }
-  if (exporting.value) return
-  exporting.value = true
-  try {
-    const res = await exportConversation(activeId.value, { format: 'docx' })
-    const url = assetUrl(res?.data?.url)
-    if (url) window.open(url, '_blank')
-    ElMessage.success('会话已导出')
-  } finally {
-    exporting.value = false
   }
 }
 
@@ -999,33 +972,6 @@ function followStreamTail(selector: string) {
   border-radius: 50%;
   background: #2fc26e;
   box-shadow: 0 0 0 3px rgba(47, 194, 110, 0.12);
-}
-
-.chat-export {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 14px;
-  border: 1px solid #e6ebf5;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.86);
-  color: #4e5969;
-  font-size: 12.5px;
-  font-family: inherit;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, background-color 0.15s;
-}
-
-.chat-export:hover:not(:disabled) {
-  border-color: rgba(99, 91, 255, 0.35);
-  background: #fff;
-  color: #3b5bdb;
-}
-
-.chat-export:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .message-scroll {

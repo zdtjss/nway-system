@@ -84,8 +84,9 @@ export function useAiPanelLayout({ anchor, viewport }) {
         const vh = viewport.value.h
         const maxLeft = Math.max(VIEWPORT_MARGIN, vw - width - VIEWPORT_MARGIN)
         const maxTop = Math.max(VIEWPORT_MARGIN, vh - height - VIEWPORT_MARGIN)
-        const viewLeft = Math.min(Math.max(VIEWPORT_MARGIN, anchor.value.left + left + aiOffset.value.left), maxLeft)
-        const viewTop = Math.min(Math.max(VIEWPORT_MARGIN, anchor.value.top + top + aiOffset.value.top), maxTop)
+        // 面板向右上微调，贴近右上角的悬浮搜索图标
+        const viewLeft = Math.min(Math.max(VIEWPORT_MARGIN, anchor.value.left + left + aiOffset.value.left + GAP), maxLeft)
+        const viewTop = Math.min(Math.max(VIEWPORT_MARGIN, anchor.value.top + top + aiOffset.value.top - GAP), maxTop)
         return {
             left: viewLeft - anchor.value.left,
             top: viewTop - anchor.value.top,

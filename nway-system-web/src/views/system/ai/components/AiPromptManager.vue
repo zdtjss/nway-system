@@ -11,23 +11,15 @@
       <div class="prompt-panel-head">
         <div>
           <div class="prompt-panel-title">提示词</div>
-          <div class="prompt-panel-sub">点击提示词填入输入框，星标可设为快捷提示词</div>
         </div>
-        <el-button link type="primary" :icon="Plus" @click="startNewPrompt">新建</el-button>
+        <div class="prompt-panel-actions">
+          <el-button link type="primary" :icon="MagicStick" :loading="extracting"
+                     :disabled="!activeId || extracting" @click="emit('extract')">
+            {{ extracting ? '正在提取…' : '提取' }}
+          </el-button>
+          <el-button link type="primary" :icon="Plus" style="margin-left: 0px" @click="startNewPrompt">新建</el-button>
+        </div>
       </div>
-      <button type="button" class="prompt-extract" :disabled="!activeId || extracting"
-              @click="emit('extract')">
-        <el-icon class="prompt-extract-icon" :class="{ 'is-loading': extracting }">
-          <Loading v-if="extracting" />
-          <MagicStick v-else />
-        </el-icon>
-        <span class="prompt-extract-main">
-          <span class="prompt-extract-title">{{ extracting ? '正在提取提示词…' : '从当前对话提取' }}</span>
-          <span class="prompt-extract-sub">
-            {{ activeId ? '根据当前会话归纳可复用提示词' : '当前没有可提取的会话' }}
-          </span>
-        </span>
-      </button>
       <div class="prompt-panel-list">
         <div v-for="prompt in prompts" :key="prompt.id" class="prompt-card" @click="usePrompt(prompt)">
           <div class="prompt-card-head">
@@ -63,7 +55,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Delete, Edit, Loading, MagicStick, Plus, Star, StarFilled } from '@element-plus/icons-vue'
+import { Delete, Edit, MagicStick, Plus, Star, StarFilled } from '@element-plus/icons-vue'
 import type { AiPromptVo } from '@/api/ai'
 
 const props = defineProps({
@@ -153,61 +145,11 @@ function promptSummary(content?: string) {
   color: #232a38;
 }
 
-.prompt-panel-sub {
-  margin-top: 2px;
-  color: #a4adbe;
-  font-size: 11px;
-}
-
-.prompt-extract {
+.prompt-panel-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  margin-top: 10px;
-  padding: 10px 12px;
-  border: 1px dashed rgba(99, 91, 255, 0.35);
-  border-radius: 12px;
-  background: rgba(99, 91, 255, 0.05);
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
-}
-
-.prompt-extract:hover:not(:disabled) {
-  border-color: rgba(99, 91, 255, 0.55);
-  background: rgba(99, 91, 255, 0.09);
-  box-shadow: 0 6px 16px -12px rgba(91, 92, 255, 0.4);
-}
-
-.prompt-extract:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.prompt-extract-icon {
+  gap: 4px;
   flex: 0 0 auto;
-  font-size: 18px;
-  color: #635bff;
-}
-
-.prompt-extract-main {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.prompt-extract-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #2f3542;
-}
-
-.prompt-extract-sub {
-  font-size: 11px;
-  color: #a4adbe;
 }
 
 .prompt-panel-list {
